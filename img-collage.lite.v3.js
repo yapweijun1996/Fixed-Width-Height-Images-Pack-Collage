@@ -1,5 +1,6 @@
 /*!
- * ImgCollage Lite v4.1 — Auto-pack + toolbar always on top
+ * ImgCollage Lite v4.2 — Auto-pack + toolbar always on top
+ * Fix: resizing no longer snaps tile to (1,1) when grid-start is implicit.
  * - Fixed height (no scroll), keep ratio (contain)
  * - Click-to-front for tiles
  * - Per-tile handles only when selected
@@ -10,7 +11,7 @@
  */
 ;(function(){
   "use strict";
-  const CLASS='img_collage', STYLE_ID='img-collage-lite-v4_1-style';
+  const CLASS='img_collage', STYLE_ID='img-collage-lite-v4_2-style';
   const usedIds = new Set();
   // Layer constants (toolbar > panel > toast > layer > tiles)
   const Z_BAR   = 100000;
@@ -135,13 +136,13 @@
 
       this.selected=null; this.drag=null; this.rz=null;
       this.toastTimer=null;
-      this.zTop=1; // tile z-index counter (toolbar is always higher)
+      this.zTop=1; // tile z-index counter (toolbar stays above)
 
-      // Capture initial <img>s (boot from inline)
+      // Capture initial <img>s
       const initialImgs = Array.from(root.querySelectorAll('img')).map(img=>({
         src: img.getAttribute('src'),
         alt: img.getAttribute('alt') || '',
-        colSpan: +(img.dataset.colspan||''),
+        colSpan: +(img.dataset.colspan||''), 
         rowSpan:  +(img.dataset.rowspan||''),
         colStart: +(img.dataset.colstart||'')||null,
         rowStart: +(img.dataset.rowstart||'')||null
@@ -255,35 +256,14 @@
       const arRaw = parseFloat(tile.dataset.ar||'1');
       const ar = Number.isFinite(arRaw)&&arRaw>0?arRaw:1;
       const rowSpanFromC = (cs)=> Math.max(1, Math.round((cs * M.colW * ar) / M.unitY));
-
       let cs = Math.max(1, Math.round(colSpan));
+      let rsStart = Math.max(1, rowStart || 1);
       let rs = rowSpanFromC(cs);
 
-      // Preserve null for start positions if they were not provided (for auto-flow)
-      let rStart = rowStart ? Math.max(1, rowStart) : null;
-      
-      // Determine overflow condition based on whether the tile has an explicit start row
-      const isOverflowing = () => rStart ? (rStart + rs - 1 > maxR) : (rs > maxR);
-
-      // Shrink width (and thus height) until it fits, or until it's 1 column wide
-      while (isOverflowing() && cs > 1) {
-          cs -= 1;
-          rs = rowSpanFromC(cs);
-      }
-
-      // If it still overflows (because it's at min width)...
-      if (isOverflowing()) {
-        if (rStart) {
-          // ...and it's a positioned tile, move it up to fit.
-          rStart = Math.max(1, maxR - rs + 1);
-        } else {
-          // ...and it's a packed tile, just cap its height to the max possible.
-          rs = maxR;
-        }
-      }
-      
-      const cStart = colStart ? clamp(colStart, 1, this.cols) : null;
-      return { cStart, cSpan: cs, rStart: rStart, rSpan: rs };
+      while (rsStart + rs - 1 > maxR && cs > 1){ cs -= 1; rs = rowSpanFromC(cs); }
+      if (rsStart + rs - 1 > maxR){ rsStart = Math.max(1, maxR - rs + 1); }
+      const cStart = clamp(colStart || 1, 1, this.cols);
+      return { cStart, cSpan: cs, rStart: rsStart, rSpan: rs };
     }
     px2col(pxVal, M){
       const m = M || metricsOf(this.grid,this.cols,this.rowH,this.gap);
@@ -360,7 +340,16 @@
       const imgEl = tile.querySelector('img'); imgEl.src=newUrl;
 
       const c=parseGrid(tile.style.gridColumn), r=parseGrid(tile.style.gridRow);
-      this.setSpanKeepRatio(tile, c.start, c.span, r.start);
+      // If no explicit start (after PACK), infer from current pixel position
+      const M = metricsOf(this.grid,this.cols,this.rowH,this.gap);
+      const rect = tile.getBoundingClientRect();
+      const gridRect = this.grid.getBoundingClientRect();
+      const offLeft = rect.left - gridRect.left - M.padL;
+      const offTop  = rect.top  - gridRect.top  - M.padT;
+      const startC = c.start || this.px2col(offLeft, M);
+      const startR = r.start || this.px2row(offTop,  M);
+
+      this.setSpanKeepRatio(tile, startC, c.span, startR);
       this.syncTextarea();
     }
 
@@ -404,7 +393,7 @@
       this.selected = el || null;
       if(el){
         el.classList.add('_sel');
-        el.style.zIndex = (++this.zTop).toString(); // bring tile above others (still below toolbar)
+        el.style.zIndex = (++this.zTop).toString(); // bring tile above others (below toolbar)
       }
     }
 
@@ -574,14 +563,30 @@
       this.syncTextarea();
     }
 
-    // ---------- RESIZE ----------
+    // ---------- RESIZE (Fix: preserve current start even if implicit) ----------
     startResize(e){
       e.stopPropagation();
       const tile=e.currentTarget.parentElement;
       this.select(tile);
+
+      // Read current spans from style
       const c=parseGrid(tile.style.gridColumn), r=parseGrid(tile.style.gridRow);
       const M = metricsOf(this.grid,this.cols,this.rowH,this.gap);
-      this.rz={tile,startX:e.clientX,startY:e.clientY,col:c,row:r,M};
+
+      // If grid-start isn't explicitly set (after PACK it's "span N"), infer the current start from pixel position
+      const gridRect = this.grid.getBoundingClientRect();
+      const rect = tile.getBoundingClientRect();
+      const offLeft = rect.left - gridRect.left - M.padL;
+      const offTop  = rect.top  - gridRect.top  - M.padT;
+
+      const inferredCStart = this.px2col(offLeft, M);
+      const inferredRStart = this.px2row(offTop,  M);
+
+      const startC = c.start || inferredCStart;
+      const startR = r.start || inferredRStart;
+
+      // Store inferred starts so resizing keeps position instead of snapping to (1,1)
+      this.rz={tile,startX:e.clientX,startY:e.clientY,col:{start:startC,span:c.span},row:{start:startR,span:r.span},M};
       window.addEventListener('pointermove', this.onResizeBound=this.onResize.bind(this));
       window.addEventListener('pointerup', this.endResizeBound=this.endResize.bind(this), {once:true});
     }
@@ -601,5 +606,6 @@
   };
   window.ImgCollage = ImgCollage;
 })();
+
   // Auto init & auto-pack (handled inside constructor for inline <img>)
   ImgCollage.init('.img_collage');
