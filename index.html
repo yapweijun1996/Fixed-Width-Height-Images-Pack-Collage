@@ -1,15 +1,12 @@
-<div class="img_collage" style="width:720px;height:600px;" data-id="boardA"></div>
-<div class="img_collage" style="width:520px;height:420px;" data-id="boardB"></div>
+<div class="img_collage" style="width:720px;height:600px;"
+     data-id="boardA"
+     data-default-colspan="6">
+  <img src="https://picsum.photos/id/1015/1200/800.jpg" alt="">
+  <img src="https://picsum.photos/id/1025/800/1200.jpg" alt="">
+  <img src="https://picsum.photos/id/1003/1181/1772.jpg" alt="">
+</div>
 
 <script src="img-collage.lite.v3.js"></script>
 <script>
-  ImgCollage.init('.img_collage'); // activate all
-
-  // (optional) listen for changes to autosave to your DB
-  document
-    .querySelector('.img_collage[data-id="boardA"]')
-    .addEventListener('imgcollagechange', (e) => {
-      // e.detail is the JSON object — save it if you want
-      // yourSaveToDB(JSON.stringify(e.detail));
-    });
+  ImgCollage.init('.img_collage');
 </script>
