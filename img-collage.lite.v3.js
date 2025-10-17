@@ -1,38 +1,42 @@
 /*!
- * ImgCollage Lite v3.8
- * - Click-to-front stacking (z-index bump on select)
- * - Show controls only when an image is selected:
- *     ._move, ._rz visible only on ._tile._sel
- *     ._bar hidden until selection (then .show)
- * - Precise grid math & capacity checks (from v3.7)
- * - Fixed height, no scroll; keep-ratio, no-crop
- * - Robust add/replace with preload and error handling
- * - PACK: capacity-aware greedy shrink + dense auto-placement
- * - No keyboard shortcuts
+ * ImgCollage Lite v4.1 — Auto-pack + toolbar always on top
+ * - Fixed height (no scroll), keep ratio (contain)
+ * - Click-to-front for tiles
+ * - Per-tile handles only when selected
+ * - Toolbar always visible & above tiles
+ * - Capacity-aware PACK
+ * - Robust add/replace preload + error handling
+ * - Multi-board, unique data-id ensured
  */
 ;(function(){
   "use strict";
-  const CLASS='img_collage', STYLE_ID='img-collage-lite-v3_8-style';
+  const CLASS='img_collage', STYLE_ID='img-collage-lite-v4_1-style';
+  const usedIds = new Set();
+  // Layer constants (toolbar > panel > toast > layer > tiles)
+  const Z_BAR   = 100000;
+  const Z_PANEL = 100020;
+  const Z_TOAST = 100040;
+  const Z_LAYER = 100060;
 
   // ---------- Styles ----------
   const CSS = `
   .${CLASS}{
-    position:relative; 
-    border:1px solid var(--ic-border); border-radius:var(--ic-radius);
-    overflow:hidden; 
+    --ic-border:#e5e7eb; --ic-radius:12px; --ic-gap:6px;
+    --ic-shadow:0 10px 30px rgba(0,0,0,.08);
+    --ic-toast-ok:#10b981; --ic-toast-err:#ef4444;
+    position:relative; background:#fff; border:1px solid var(--ic-border); border-radius:var(--ic-radius);
+    overflow:hidden; /* fixed-height board, no scroll */
+    box-shadow:var(--ic-shadow); font-family:ui-sans-serif,system-ui,Arial,sans-serif;
   }
-  /* Board toolbar: hidden until a tile is selected */
   .${CLASS} ._bar{
-    position:absolute; left:8px; top:8px; z-index:50;
-    display:none; gap:6px; background:rgba(255,255,255,.9);
+    position:absolute; left:8px; top:8px; z-index:${Z_BAR};
+    display:flex; gap:6px; background:rgba(255,255,255,.92);
     padding:6px; border:1px solid #d0d7de; border-radius:10px; backdrop-filter: blur(4px);
   }
-  .${CLASS} ._bar.show{ display:flex; }
   .${CLASS} ._btn{ border:1px solid #d0d7de; background:#fff; padding:6px 10px; border-radius:8px; cursor:pointer; font-size:12px; }
   .${CLASS} ._btn:active{ transform:translateY(1px); }
 
   .${CLASS} ._grid{ position:absolute; inset:0; display:grid; gap:var(--ic-gap); padding:var(--ic-gap); grid-auto-flow:dense; }
-  .${CLASS}.dragover ._grid{ outline:2px dashed #94a3b8; outline-offset:-8px; }
 
   .${CLASS} ._tile{
     position:relative; display:grid; border-radius:10px; overflow:hidden; user-select:none;
@@ -41,13 +45,10 @@
   .${CLASS} ._tile img{ width:100%; height:100%; object-fit:contain; object-position:center; background:#fff; display:block; pointer-events:none; }
   .${CLASS} ._tile._sel{ outline:2px solid #2563eb; }
 
-  /* Handles hidden until selection */
-  .${CLASS} ._tile ._move, .${CLASS} ._tile ._rz{
-    opacity:0; pointer-events:none; transition:opacity .12s ease;
-  }
-  .${CLASS} ._tile._sel ._move, .${CLASS} ._tile._sel ._rz{
-    opacity:1; pointer-events:auto;
-  }
+  /* Handles visible only when selected */
+  .${CLASS} ._tile ._move, .${CLASS} ._tile ._rz{ opacity:0; pointer-events:none; transition:opacity .12s ease; }
+  .${CLASS} ._tile._sel ._move, .${CLASS} ._tile._sel ._rz{ opacity:1; pointer-events:auto; }
+
   .${CLASS} ._rz{ position:absolute; width:12px; height:12px; background:#fff; border:2px solid #2563eb; border-radius:4px;
     right:-6px; bottom:-6px; cursor:nwse-resize; box-shadow:0 1px 4px rgba(0,0,0,.15); z-index:3; }
   .${CLASS} ._move{
@@ -56,14 +57,14 @@
   }
 
   .${CLASS} ._panel{
-    position:absolute; right:8px; top:8px; z-index:60; width:min(420px,60%); display:none; flex-direction:column; gap:6px;
+    position:absolute; right:8px; top:8px; z-index:${Z_PANEL}; width:min(420px,60%); display:none; flex-direction:column; gap:6px;
     padding:8px; border:1px solid #d0d7de; border-radius:10px; background:#fff; box-shadow:0 10px 30px rgba(0,0,0,.18);
   }
   .${CLASS} ._panel.show{ display:flex; }
   .${CLASS} ._data{ width:100%; height:220px; font:12px/1.4 ui-monospace,Menlo,Consolas,monospace; }
 
   .${CLASS} ._toast{
-    position:absolute; right:8px; bottom:8px; z-index:70; color:#fff; font-size:12px;
+    position:absolute; right:8px; bottom:8px; z-index:${Z_TOAST}; color:#fff; font-size:12px;
     border-radius:999px; padding:4px 10px; opacity:0; transform:translateY(6px); transition:.25s;
     background:var(--ic-toast-ok);
   }
@@ -75,7 +76,9 @@
     border:1px solid #cbd5e1; border-radius:8px; padding:6px 8px; z-index:1;
   }
   `;
-  if(!document.getElementById(STYLE_ID)){ const s=document.createElement('style'); s.id=STYLE_ID; s.textContent=CSS; document.head.appendChild(s); }
+  if(!document.getElementById(STYLE_ID)){
+    const s=document.createElement('style'); s.id=STYLE_ID; s.textContent=CSS; document.head.appendChild(s);
+  }
 
   // ---------- Utils ----------
   const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
@@ -118,8 +121,12 @@
 
   class Box{
     constructor(root){
-      this.root=root;
-      this.id=root.dataset.id||('board_'+uid()); root.dataset.id=this.id;
+      // Ensure unique id even if duplicated across boards
+      const wantedId = root.dataset.id;
+      let id = wantedId || ('board_'+uid());
+      while(usedIds.has(id)) id = wantedId ? (wantedId + '_' + uid()) : ('board_'+uid());
+      usedIds.add(id);
+      this.root=root; this.id=id; root.dataset.id=this.id;
 
       this.cols=+root.dataset.cols||24;
       this.rowH=+root.dataset.row ||24;
@@ -128,13 +135,13 @@
 
       this.selected=null; this.drag=null; this.rz=null;
       this.toastTimer=null;
-      this.zTop=100; // z-index counter for click-to-front
+      this.zTop=1; // tile z-index counter (toolbar is always higher)
 
-      // Capture initial <img>s
+      // Capture initial <img>s (boot from inline)
       const initialImgs = Array.from(root.querySelectorAll('img')).map(img=>({
         src: img.getAttribute('src'),
         alt: img.getAttribute('alt') || '',
-        colSpan: +(img.dataset.colspan||''), 
+        colSpan: +(img.dataset.colspan||''),
         rowSpan:  +(img.dataset.rowspan||''),
         colStart: +(img.dataset.colstart||'')||null,
         rowStart: +(img.dataset.rowstart||'')||null
@@ -151,7 +158,7 @@
       this.grid.style.gridTemplateColumns=`repeat(${this.cols},1fr)`;
       this.grid.style.gridAutoRows=this.rowH+'px';
       this.grid.style.gap=`${this.gap}px`; this.grid.style.padding=`${this.gap}px`;
-      this.layer=document.createElement('div'); Object.assign(this.layer.style,{position:'absolute',inset:'0',pointerEvents:'none',zIndex:'90'});
+      this.layer=document.createElement('div'); Object.assign(this.layer.style,{position:'absolute',inset:'0',pointerEvents:'none',zIndex:String(Z_LAYER)});
       this.panel=document.createElement('div'); this.panel.className='_panel';
       this.panel.innerHTML=`
         <textarea class="_data" name="${this.id}_layout"></textarea>
@@ -163,7 +170,6 @@
       this.textarea=this.panel.querySelector('._data');
       this.toast=document.createElement('div'); this.toast.className='_toast'; this.toast.textContent='Saved ✓';
       this.hint=document.createElement('div'); this.hint.className='_hint'; this.hint.textContent='Drop images here or click Add';
-
       root.append(this.bar,this.grid,this.layer,this.panel,this.toast,this.hint);
 
       // Refs
@@ -176,6 +182,7 @@
 
       this.bind();
 
+      // Init: JSON > inline <img>
       if((this.textarea.value||'').trim()){
         this.loadSafe(this.textarea.value);
       }else if(initialImgs.length){
@@ -184,9 +191,25 @@
           const rs = info.rowSpan > 0 ? info.rowSpan : null;
           this.addByUrl(info.src, {colSpan:cs, rowSpan:rs, colStart:info.colStart, rowStart:info.rowStart, silent:true});
         });
-        this.syncTextarea(true);
+        // Wait for images, then auto-pack
+        this.autoPackAfterLoad();
       }
       this.updateHint();
+    }
+
+    // ---------- Auto-pack after images load ----------
+    async autoPackAfterLoad(){
+      const imgs = Array.from(this.grid.querySelectorAll('img'));
+      await Promise.all(imgs.map(img=>{
+        if(img.complete && img.naturalWidth>0) return Promise.resolve();
+        return new Promise(res=>{
+          const done=()=>{ img.removeEventListener('load',done); img.removeEventListener('error',done); res(); };
+          img.addEventListener('load',done,{once:true});
+          img.addEventListener('error',done,{once:true});
+        });
+      }));
+      this.packFitWithinCapacity();
+      this.syncTextarea(true);
     }
 
     // ---------- Board constraints ----------
@@ -210,7 +233,7 @@
       this.toast.classList.toggle('err', !ok);
       this.toast.classList.add('show');
       clearTimeout(this.toastTimer);
-      this.toastTimer = setTimeout(()=> this.toast.classList.remove('show'), 1200);
+      this.toastTimer = setTimeout(()=> this.toast.classList.remove('show'), 1400);
     }
 
     // ---------- Metrics & mapping ----------
@@ -232,26 +255,47 @@
       const arRaw = parseFloat(tile.dataset.ar||'1');
       const ar = Number.isFinite(arRaw)&&arRaw>0?arRaw:1;
       const rowSpanFromC = (cs)=> Math.max(1, Math.round((cs * M.colW * ar) / M.unitY));
+
       let cs = Math.max(1, Math.round(colSpan));
-      let rsStart = Math.max(1, rowStart || 1);
       let rs = rowSpanFromC(cs);
 
-      while (rsStart + rs - 1 > maxR && cs > 1){ cs -= 1; rs = rowSpanFromC(cs); }
-      if (rsStart + rs - 1 > maxR){ rsStart = Math.max(1, maxR - rs + 1); }
-      const cStart = clamp(colStart || 1, 1, this.cols);
-      return { cStart, cSpan: cs, rStart: rsStart, rSpan: rs };
+      // Preserve null for start positions if they were not provided (for auto-flow)
+      let rStart = rowStart ? Math.max(1, rowStart) : null;
+      
+      // Determine overflow condition based on whether the tile has an explicit start row
+      const isOverflowing = () => rStart ? (rStart + rs - 1 > maxR) : (rs > maxR);
+
+      // Shrink width (and thus height) until it fits, or until it's 1 column wide
+      while (isOverflowing() && cs > 1) {
+          cs -= 1;
+          rs = rowSpanFromC(cs);
+      }
+
+      // If it still overflows (because it's at min width)...
+      if (isOverflowing()) {
+        if (rStart) {
+          // ...and it's a positioned tile, move it up to fit.
+          rStart = Math.max(1, maxR - rs + 1);
+        } else {
+          // ...and it's a packed tile, just cap its height to the max possible.
+          rs = maxR;
+        }
+      }
+      
+      const cStart = colStart ? clamp(colStart, 1, this.cols) : null;
+      return { cStart, cSpan: cs, rStart: rStart, rSpan: rs };
     }
     px2col(pxVal, M){
       const m = M || metricsOf(this.grid,this.cols,this.rowH,this.gap);
-      const idx = Math.floor( (pxVal + 0.0001) / m.unitX ) + 1;
+      const idx = Math.floor( (pxVal + 0.0001) / (m.colW + m.gap) ) + 1;
       return clamp(idx, 1, this.cols);
     }
     px2row(pxVal, M){
       const m = M || metricsOf(this.grid,this.cols,this.rowH,this.gap);
-      const idx = Math.floor( (pxVal + 0.0001) / m.unitY ) + 1;
+      const idx = Math.floor( (pxVal + 0.0001) / (this.rowH + m.gap) ) + 1;
       return clamp(idx, 1, this.maxRows());
     }
-    px2colW(dx, M){ const m=M||metricsOf(this.grid,this.cols,this.rowH,this.gap); return Math.round(dx / m.unitX); }
+    px2colW(dx, M){ const m=M||metricsOf(this.grid,this.cols,this.rowH,this.gap); return Math.round(dx / (m.colW + m.gap)); }
 
     // ---------- Preload helpers ----------
     preloadImg(src){
@@ -276,7 +320,7 @@
       const t=document.createElement('div'); t.className='_tile'; t.style.zIndex = (++this.zTop).toString();
       t.dataset.id=uid(); t.dataset.src=src; t.dataset.ar=String(Number.isFinite(ar)&&ar>0?ar:1);
 
-      // exact spans for capacity
+      // capacity
       const cs = Math.max(1, Math.round((colSpan||this.DEFAULT_COL_SPAN)));
       const rs = rowSpan==null ? this.spanRForC(t, cs) : Math.max(1, rowSpan);
       const need = cs*rs;
@@ -295,7 +339,7 @@
       const fit = this.fitWithinRows(t, colStart||1, cs, rowStart||1);
       setGrid(t, fit.cStart, fit.cSpan, fit.rStart, fit.rSpan, this.cols);
 
-      // Interactions
+      // interactions
       t.addEventListener('pointerdown', (ev)=>{ ev.stopPropagation(); this.select(t); });
       t.addEventListener('dblclick', ()=>{ const current=t.dataset.src||'https://'; const url=prompt('New image URL:', current); if(url) this.replaceImage(t, url); });
       mv.addEventListener('pointerdown', this.startMove.bind(this));
@@ -310,7 +354,6 @@
       if(!isSafeUrl(newUrl)){ this.toastMsg('Invalid URL', false); return; }
       const {ok, img} = await this.preloadImg(newUrl);
       if(!ok){ this.toastMsg('Image load error', false); return; }
-
       const ar = (img.naturalHeight && img.naturalWidth) ? (img.naturalHeight / img.naturalWidth) : 1;
       tile.dataset.ar = String(Number.isFinite(ar)&&ar>0?ar:1);
       tile.dataset.src = newUrl;
@@ -318,7 +361,6 @@
 
       const c=parseGrid(tile.style.gridColumn), r=parseGrid(tile.style.gridRow);
       this.setSpanKeepRatio(tile, c.start, c.span, r.start);
-
       this.syncTextarea();
     }
 
@@ -347,38 +389,31 @@
       }
       if(area() > cap){ this.toastMsg('Cannot pack: reduce sizes or images', false); }
 
-      // auto-place densely, preserve click-to-front order with zIndex bump
       items.forEach(i=>{
         i.colSpan = clamp(i.colSpan, 1, this.cols);
         i.rowSpan = clamp(i.rowSpan, 1, this.maxRows());
         i.t.style.gridColumn = `span ${i.colSpan}`;
         i.t.style.gridRow    = `span ${i.rowSpan}`;
-        i.t.style.zIndex = (++this.zTop).toString();
+        i.t.style.zIndex = (++this.zTop).toString(); // raise order; toolbar still above due to huge z
       });
     }
 
-    // ---------- Selection (click-to-front + UI toggle) ----------
+    // ---------- Selection ----------
     select(el){
       if(this.selected && this.selected!==el) this.selected.classList.remove('_sel');
       this.selected = el || null;
-
-      // Toggle board toolbar visibility
-      this.bar.classList.toggle('show', !!el);
-
       if(el){
         el.classList.add('_sel');
-        // bring to front (required behavior)
-        el.style.zIndex = (++this.zTop).toString();
+        el.style.zIndex = (++this.zTop).toString(); // bring tile above others (still below toolbar)
       }
     }
 
     // ---------- Binding ----------
     bind(){
-      // Board click on empty space => deselect (hide toolbar and handles)
+      // Deselect when clicking empty grid area
       this.grid.addEventListener('pointerdown', (e)=>{
         if(e.target === this.grid){ this.select(null); }
       });
-      // Prevent clicks on toolbar/panel from clearing selection
       this.bar.addEventListener('pointerdown', e=>e.stopPropagation());
       this.panel.addEventListener('pointerdown', e=>e.stopPropagation());
 
@@ -392,7 +427,7 @@
         this.input.value='';
       });
 
-      // PACK button
+      // PACK
       this.btnPack.addEventListener('click', ()=>{ this.packFitWithinCapacity(); this.syncTextarea(); });
 
       // Data panel
@@ -423,7 +458,7 @@
         }
       });
 
-      // Paste URL to add (prechecked)
+      // Paste URL to add
       this.root.addEventListener('paste', async e=>{
         const text=(e.clipboardData||window.clipboardData)?.getData('text')||'';
         if(text) await this.addByUrl(text);
@@ -462,12 +497,9 @@
       this.grid.style.gridAutoRows=this.rowH+'px';
       this.grid.style.gap=`${this.gap}px`; this.grid.style.padding=`${this.gap}px`;
       this.grid.innerHTML='';
-      data.items.forEach(it=> this.addByUrl(it.src, {
-        colSpan:it.colSpan, rowSpan:it.rowSpan, colStart:it.colStart, rowStart:it.rowStart, silent:true
-      }));
+      data.items.forEach(it=> this.addByUrl(it.src, { colSpan:it.colSpan, rowSpan:it.rowSpan, colStart:it.colStart, rowStart:it.rowStart, silent:true }));
       this.updateHint();
-      // hide UI until user selects something
-      this.select(null);
+      // Respect explicit JSON layouts (no auto-pack here)
     }
     loadSafe(raw){
       try{ const obj = typeof raw==='string'? JSON.parse(raw) : raw; this.load(obj); return true; }
@@ -481,11 +513,11 @@
       if(!silent) this.toastMsg('Saved ✓', true);
     }
 
-    // ---------- MOVE (click-to-front respected) ----------
+    // ---------- MOVE ----------
     startMove(e){
       e.preventDefault(); e.stopPropagation();
       const tile = e.currentTarget.parentElement;
-      this.select(tile); // ensures handles visible + front
+      this.select(tile);
       if(e.currentTarget.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId);
 
       const gridRect = this.grid.getBoundingClientRect();
@@ -496,7 +528,7 @@
       const startTop  = rect.top  - gridRect.top  - M.padT;
 
       const ghost = tile.cloneNode(true);
-      Object.assign(ghost.style,{position:'absolute',left:startLeft+'px',top:startTop+'px',width:rect.width+'px',height:rect.height+'px',pointerEvents:'none',zIndex:'95'});
+      Object.assign(ghost.style,{position:'absolute',left:startLeft+'px',top:startTop+'px',width:rect.width+'px',height:rect.height+'px',pointerEvents:'none',zIndex:String(Z_LAYER-1)});
       this.layer.appendChild(ghost);
 
       tile.style.visibility='hidden'; tile.dataset._hidden='1';
@@ -542,11 +574,11 @@
       this.syncTextarea();
     }
 
-    // ---------- RESIZE (keep ratio + clamp) ----------
+    // ---------- RESIZE ----------
     startResize(e){
       e.stopPropagation();
       const tile=e.currentTarget.parentElement;
-      this.select(tile); // ensure front
+      this.select(tile);
       const c=parseGrid(tile.style.gridColumn), r=parseGrid(tile.style.gridRow);
       const M = metricsOf(this.grid,this.cols,this.rowH,this.gap);
       this.rz={tile,startX:e.clientX,startY:e.clientY,col:c,row:r,M};
@@ -569,3 +601,5 @@
   };
   window.ImgCollage = ImgCollage;
 })();
+  // Auto init & auto-pack (handled inside constructor for inline <img>)
+  ImgCollage.init('.img_collage');
