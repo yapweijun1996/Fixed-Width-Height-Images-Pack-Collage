@@ -1,3 +1,15 @@
-<div class="x-collage" style="width:720px;height:600px;" data-id="boardA"></div>
-<div class="x-collage" style="width:520px;height:420px;" data-id="boardB"></div>
+<div class="img_collage" style="width:720px;height:600px;" data-id="boardA"></div>
+<div class="img_collage" style="width:520px;height:420px;" data-id="boardB"></div>
 
+<script src="img-collage.lite.v3.js"></script>
+<script>
+  ImgCollage.init('.img_collage'); // activate all
+
+  // (optional) listen for changes to autosave to your DB
+  document
+    .querySelector('.img_collage[data-id="boardA"]')
+    .addEventListener('imgcollagechange', (e) => {
+      // e.detail is the JSON object — save it if you want
+      // yourSaveToDB(JSON.stringify(e.detail));
+    });
+</script>
