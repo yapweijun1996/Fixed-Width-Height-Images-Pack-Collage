@@ -1,3 +1,4 @@
+
 /*!
  * ImgCollage Lite v4.2 — Auto-pack + toolbar always on top
  * Fix: resizing no longer snaps tile to (1,1) when grid-start is implicit.
@@ -609,3 +610,10 @@
 
   // Auto init & auto-pack (handled inside constructor for inline <img>)
   ImgCollage.init('.img_collage');
+
+  // Optional: listen to change events
+  document.querySelectorAll('.img_collage').forEach(el=>{
+    el.addEventListener('imgcollagechange', e => {
+      // console.log('Changed:', e.detail);
+    });
+  });
