@@ -30,7 +30,16 @@
   - data-flow 可切換為 "row" → 使用 BalancedNoCrop 的等高列式排法（滿寬）
   - data-mincols / data-maxcols → 欄數搜尋範圍（欄式）
   - data-hgap / data-vgap → 欄間與圖間間距
+  - data-minutil → 欄式利用率門檻（0~1，預設 0.88），低於門檻自動改用 row 方案以「自動補滿空白」
 -->
+<div
+  class="img_collage"
+  style="width:640px;height:500px;border:2px solid #333;background:#fafafa;"
+>
+  <img src="https://picsum.photos/id/1015/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1018/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1019/1200/800.jpg"  alt="">
+</div>
 <div
   class="img_collage"
   style="width:640px;height:500px;border:2px solid #333;background:#fafafa;"
@@ -119,11 +128,15 @@
     log('[ColumnNoCrop] Start', {W,H,N:aspects.length, minCols, maxCols});
     let best = null;
 
-    for (let C = Math.max(1, minCols); C <= Math.max(minCols, maxCols); C++) {
-      const gapSlots = Math.max(0, C - 1);
+    // 計算可行欄數範圍：最多不超過 N；允許低於 minCols 以確保可解（例如 N 小或寬度不足時）
+    const N = aspects.length;
+    const cMax = Math.min(Math.max(minCols, maxCols), N);
+    const cMin = 1;
 
-      generateCompositions(aspects.length, C, (counts) => {
-        // 按順序切分到各欄（保留原有輸入順序）：上到下，再到下一欄
+    // 優先嘗試較多欄，若無可行則逐步降欄（避免負 gap）
+    for (let C = cMax; C >= cMin; C--) {
+      generateCompositions(N, C, (counts) => {
+        // 依輸入順序：上到下 → 下一欄
         let idx = 0;
         const cols = [];
         const widths = [];
@@ -135,30 +148,36 @@
 
           const H_eff = H - vgap * Math.max(0, cnt - 1);
           const Sj = list.reduce((s, a) => s + 1 / Math.max(1e-9, a), 0); // Σ(1/a)
-          const wj = H_eff / Math.max(1e-9, Sj); // 令欄寬 wj，使 Σ(wj/a) + gaps = H → 滿高
+          const wj = H_eff / Math.max(1e-9, Sj); // 欄寬 wj，使 Σ(wj/a) + gaps = H → 滿高
 
-          cols.push({count: cnt, aspects: list});
+          cols.push({ count: cnt, aspects: list });
           widths.push(wj);
         }
 
         const sumW = widths.reduce((s, v) => s + v, 0);
         const neededGap = (C > 1) ? (W - sumW) / (C - 1) : 0; // 讓總寬 + gap*(C-1) 精確 = W
 
-        // 打分：禁止 neededGap 過小為負且過大；還要寬度分布均勻
+        // 若 neededGap 為負，代表以滿高無法鋪滿寬度 → 此欄數不可行，跳過
+        if (neededGap < -1e-6) {
+          return;
+        }
+
+        // 打分：gap 接近期望值、欄寬均衡
         const meanW = sumW / C;
         const varW = widths.reduce((s, v) => s + (v - meanW) * (v - meanW), 0) / C;
-
-        const overPenalty = neededGap < 0 ? Math.abs(neededGap) * 1000 : 0;
-        const score = overPenalty + Math.abs(neededGap - hgap) * 3 + Math.sqrt(varW);
+        const score = Math.abs(neededGap - hgap) * 3 + Math.sqrt(varW);
 
         if (!best || score < best.score) {
-          best = {C, counts, cols, widths, neededGap, sumW, score};
+          best = { C, counts, cols, widths, neededGap, sumW, score };
         }
       });
+
+      // 若已找到可行解且 gap 非負，即可提前結束（偏好較多欄的可行解）
+      if (best) break;
     }
 
     if (best) {
-      log('[ColumnNoCrop] Best', {cols: best.C, neededGap: +best.neededGap.toFixed(2), score: +best.score.toFixed(3)});
+      log('[ColumnNoCrop] Best', { cols: best.C, neededGap: +best.neededGap.toFixed(2), score: +best.score.toFixed(3) });
     } else {
       log('[ColumnNoCrop] No feasible partition');
     }
@@ -301,6 +320,7 @@
     const flow = (root.dataset.flow || 'row').toLowerCase(); // 'col' or 'row'
     const minCols = +root.dataset.mincols || 3;
     const maxCols = +root.dataset.maxcols || 6;
+    const minUtil = Math.max(0, Math.min(1, +root.dataset.minutil || 0.98)); // 利用率門檻（預設 0.98，更積極補滿空白）
 
     const imgs = Array.from(root.querySelectorAll('img'));
     if (!imgs.length || W <= 0 || H <= 0) return;
@@ -315,12 +335,22 @@
       const best = solveColumnNoCrop(aspects, W, H, hgap, vgap, minCols, maxCols);
       if (best) {
         const positions = buildColumnPositions(best, W, H, hgap, vgap);
-        place(root, imgs, positions);
-        log('[ColumnNoCrop] === 佈局完成 ===');
-        return;
+        const used = positions.reduce((s, p) => s + p.width * p.height, 0);
+        const util = used / (W * H);
+        log('[ColumnNoCrop] Utilization', (util * 100).toFixed(2) + '%');
+
+        // 若欄式利用率太低 → 自動改用 row 方案以補滿空白
+        if (util >= minUtil) {
+          place(root, imgs, positions);
+          log('[ColumnNoCrop] === 佈局完成 ===');
+          return;
+        } else {
+          log('[ColumnNoCrop] 利用率低於門檻，回退 BalancedNoCrop', {minUtil});
+        }
+      } else {
+        // 若無可行，回退 row
+        log('[ColumnNoCrop] 無解，回退 BalancedNoCrop');
       }
-      // 若無可行，回退 row
-      log('[ColumnNoCrop] 無解，回退 BalancedNoCrop');
     }
 
     // Row fallback / 或 flow=row
