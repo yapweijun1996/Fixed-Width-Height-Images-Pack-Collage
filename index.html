@@ -173,6 +173,46 @@
     return Math.min(hi, Math.max(lo, v));
   }
 
+  // Quantize helpers — convert float slices to integers that exactly sum to target
+  function _quantizeToSum(valuesF, targetInt){
+    const n = valuesF.length;
+    if (n === 0) return [];
+    const T = Math.max(0, Math.round(targetInt));
+    let vals = valuesF.map(v => Math.max(0, +v || 0));
+    const sumF = vals.reduce((s, v) => s + v, 0);
+    if (!(sumF > 0)) {
+      // fallback: evenly distribute target when inputs are all zero/non-finite
+      const out = new Array(n).fill(0);
+      for (let k = 0; k < T; k++) out[k % n] += 1;
+      return out;
+    }
+    // Scale to target first so floors never exceed target
+    const alpha = T / sumF;
+    vals = vals.map(v => v * alpha);
+
+    // Floor and distribute remaining pixels by fractional part
+    const ints = vals.map(v => Math.floor(v));
+    let diff = T - ints.reduce((s, v) => s + v, 0);
+    if (diff > 0) {
+      const order = vals.map((v,i)=>({i, f: v - Math.floor(v)})).sort((a,b)=>b.f - a.f);
+      for (let k = 0; k < diff; k++) {
+        const idx = order[k % n].i;
+        ints[idx] += 1;
+      }
+    } else if (diff < 0) {
+      // Extremely rare due to rounding; remove from smallest fractional parts
+      const order = vals.map((v,i)=>({i, f: v - Math.floor(v)})).sort((a,b)=>a.f - b.f);
+      for (let k = 0; k < -diff; k++) {
+        // find any slot with >0 to decrement
+        let t = k % n, tries = 0;
+        while (tries < n && ints[order[t].i] <= 0) { t = (t + 1) % n; tries++; }
+        if (tries < n) ints[order[t].i] -= 1;
+      }
+    }
+    return ints;
+  }
+  function _sum(arr){ return arr.reduce((s,v)=>s+v,0); }
+
   // ---------- ColumnNoCrop: compositions generator ----------
   function generateCompositions(n, k, cb, control) {
     // 產生 k 個正整數之組合，其和 = n；串流回呼避免大量內存
@@ -291,33 +331,63 @@
     return best;
   }
 
+  // Quantized column positions: integer-safe widths/heights, distributed remainders to avoid sub-pixel seams
   function buildColumnPositions(best, W, H, hgap, vgap) {
+    const EPS2 = 1e-6;
     const C = best.C;
-    const gap = C > 1 ? best.neededGap : 0; // 讓寬度總和精確鋪滿 W
+    const gapF = C > 1 ? best.neededGap : 0;
+    const g = C > 1 ? Math.max(0, Math.round(gapF)) : 0;       // integer horizontal gap
+    const vInt = Math.max(0, Math.round(vgap));                 // integer vertical gap
+
+    // 1) Quantize column widths so that Σ widths + g*(C-1) = W
+    const avail = W - g * Math.max(0, C - 1);
+    const widthsF = best.widths.slice();
+    const sumWF = widthsF.reduce((s, v) => s + v, 0);
+    const scaled = widthsF.map(w => w * avail / Math.max(EPS2, sumWF));
+
+    const widthsI = scaled.map(w => Math.floor(w));
+    const fracCol = scaled.map((w, i) => ({ i, f: w - Math.floor(w) })).sort((a, b) => b.f - a.f);
+    let remW = Math.round(avail - widthsI.reduce((s, v) => s + v, 0));
+    for (let k = 0; k < remW; k++) widthsI[fracCol[k % fracCol.length].i] += 1;
+
     const positions = [];
     let globalIndex = 0;
     let x = 0;
 
+    // 2) For each column, quantize heights so that Σ heights + vInt*(n-1) = H
     for (let j = 0; j < C; j++) {
       const col = best.cols[j];
-      const w = best.widths[j];
+      const wInt = Math.max(0, widthsI[j]);
 
-      // 逐張由上而下
+      // base heights by aspect
+      const baseH = col.aspects.map(a => wInt / Math.max(EPS2, a));
+      const availH = H - vInt * Math.max(0, col.count - 1);
+      const sumHF = baseH.reduce((s, v) => s + v, 0);
+      const scaledH = baseH.map(h => h * availH / Math.max(EPS2, sumHF));
+
+      const heightsI = scaledH.map(h => Math.floor(h));
+      const fracH = scaledH.map((h, i) => ({ i, f: h - Math.floor(h) })).sort((a, b) => b.f - a.f);
+      let remH = Math.round(availH - heightsI.reduce((s, v) => s + v, 0));
+      for (let k = 0; k < remH; k++) heightsI[fracH[k % fracH.length].i] += 1;
+
+      // push tiles top-down with integer coordinates
       let y = 0;
       for (let i = 0; i < col.count; i++) {
-        const a = col.aspects[i];
-        const safeW = Math.max(0, w);
-        let h = Math.max(0, safeW / Math.max(1e-6, a));
-
-        // 保持原始比例，避免强制拉伸/压缩造成“伪裁剪”
-        // 不在最后一张使用剩余高度消除误差；微小误差由底部留白吸收
-        // h = safeW / a 已保证比例一致
-
-        positions.push({idx: globalIndex, x, y, width: w, height: h});
-        y += h + vgap;
+        const hInt = Math.max(0, heightsI[i]);
+        positions.push({ idx: globalIndex, x: Math.round(x), y: Math.round(y), width: wInt, height: hInt });
+        y += hInt + vInt;
         globalIndex++;
       }
-      x += w + (j < C - 1 ? gap : 0);
+      x += wInt + (j < C - 1 ? g : 0);
+    }
+
+    // 3) Final correction: if there is a drift from rounding, absorb to the last column's last tile width
+    const drift = Math.round(W - x);
+    if (drift !== 0 && positions.length) {
+      // find last column tiles: they have maximum x among positions
+      let maxX = -Infinity, idxLast = -1;
+      for (let p = 0; p < positions.length; p++) if (positions[p].x > maxX) { maxX = positions[p].x; idxLast = p; }
+      if (idxLast >= 0) positions[idxLast].width = Math.max(0, positions[idxLast].width + drift);
     }
     return positions;
   }
@@ -328,25 +398,31 @@
     const pos = [];
     const innerW = (n) => W - hgap * Math.max(0, n - 1);
     const EPS2 = 1e-6;
-    function pushIdx(idx, x, y, w, h){ pos.push({ idx, x, y, width: w, height: h }); }
+    function pushIdx(idx, x, y, w, h){ pos.push({ idx, x: Math.round(x), y: Math.round(y), width: Math.max(0, Math.round(w)), height: Math.max(0, Math.round(h)) }); }
+
     if (N === 1) {
       const a = Math.max(EPS2, aspects[0]);
       let w = W, h = W / a;
       if (h > H) { h = H; w = H * a; }
       const x = (W - w) / 2; const y = (H - h) / 2;
-      pushIdx(0, Math.max(0,x), Math.max(0,y), Math.max(0,w), Math.max(0,h));
+      pushIdx(0, x, y, w, h);
       return pos;
     }
+
     if (N === 2) {
       const iw = innerW(2);
       const sA = Math.max(EPS2, aspects[0] + aspects[1]);
-      const h = iw / sA;
-      const top = Math.max(0, (H - h) / 2);
-      const w0 = aspects[0] * h; const w1 = aspects[1] * h;
-      pushIdx(0, 0, top, w0, h);
-      pushIdx(1, w0 + hgap, top, w1, h);
+      const hF = iw / sA;
+      const hI = Math.max(1, Math.round(hF));
+      const wF = [aspects[0]*hI, aspects[1]*hI];
+      const wI = _quantizeToSum(wF, iw);
+      const top = Math.max(0, Math.round((H - hI) / 2));
+      let x = 0;
+      pushIdx(0, x, top, wI[0], hI); x += wI[0] + hgap;
+      pushIdx(1, x, top, wI[1], hI);
       return pos;
     }
+
     if (N === 3) {
       const combos = [ [0,1,2], [0,2,1], [1,2,0] ];
       let best = null;
@@ -357,16 +433,28 @@
         const alpha = (H - vgap) / Math.max(EPS2, h1 + h2);
         const H1 = h1 * alpha, H2 = h2 * alpha;
         const score = Math.abs(H1 - H2);
-        if (!best || score < best.score) best = {i,j,k,H1,H2,score};
+        if (!best || score < best.score) best = {i,j,k,H1,H2,iw1,iw2};
       }
-      const {i,j,k,H1,H2} = best;
+      const {i,j,k,H1,H2,iw1,iw2} = best;
+      const heightsI = _quantizeToSum([H1,H2], H - vgap);
+      const H1I = Math.max(1, heightsI[0]), H2I = Math.max(1, heightsI[1]);
+
+      // Row 1 widths
+      const w1F = [aspects[i]*H1I, aspects[j]*H1I];
+      const w1I = _quantizeToSum(w1F, iw1);
+      // Row 2 width (single)
+      const w2I = _quantizeToSum([aspects[k]*H2I], iw2);
+
       let x = 0; const y1 = 0;
-      const w_i = aspects[i] * H1; pushIdx(i, x, y1, w_i, H1); x += w_i + hgap;
-      const w_j = aspects[j] * H1; pushIdx(j, x, y1, w_j, H1);
-      const w_k = aspects[k] * H2; const xk = (W - w_k) / 2; const y2 = H1 + vgap;
-      pushIdx(k, Math.max(0,xk), y2, w_k, H2);
+      pushIdx(i, x, y1, w1I[0], H1I); x += w1I[0] + hgap;
+      pushIdx(j, x, y1, w1I[1], H1I);
+
+      const y2 = y1 + H1I + vgap;
+      const xk = (W - w2I[0]) / 2;
+      pushIdx(k, xk, y2, w2I[0], H2I);
       return pos;
     }
+
     if (N === 4) {
       const pairs = [ [ [0,1],[2,3] ], [ [0,2],[1,3] ], [ [0,3],[1,2] ] ];
       let best = null;
@@ -374,20 +462,36 @@
         const s1 = aspects[a] + aspects[b];
         const s2 = aspects[c] + aspects[d];
         const diff = Math.abs(s1 - s2);
-        if (!best || diff < best.diff) best = {rows:[[a,b],[c,d]], s1, s2, diff};
+        if (!best || diff < best.diff) best = {rows:[[a,b],[c,d]]};
       }
       const [[r1a, r1b],[r2a, r2b]] = best.rows;
       const iw = innerW(2);
-      const h1 = iw / Math.max(EPS2, aspects[r1a] + aspects[r1b]);
-      const h2 = iw / Math.max(EPS2, aspects[r2a] + aspects[r2b]);
-      const alpha = (H - vgap) / Math.max(EPS2, h1 + h2);
-      const H1 = h1 * alpha, H2 = h2 * alpha;
+
+      // Base heights (float)
+      const h1F = iw / Math.max(EPS2, aspects[r1a] + aspects[r1b]);
+      const h2F = iw / Math.max(EPS2, aspects[r2a] + aspects[r2b]);
+      const alpha = (H - vgap) / Math.max(EPS2, h1F + h2F);
+      const H1F = h1F * alpha, H2F = h2F * alpha;
+
+      // Quantize heights to sum exactly
+      const heightsI = _quantizeToSum([H1F, H2F], H - vgap);
+      const H1I = Math.max(1, heightsI[0]), H2I = Math.max(1, heightsI[1]);
+
+      // Row 1 widths quantized to innerW
+      const w1F = [aspects[r1a]*H1I, aspects[r1b]*H1I];
+      const w1I = _quantizeToSum(w1F, iw);
+
+      // Row 2 widths quantized to innerW
+      const w2F = [aspects[r2a]*H2I, aspects[r2b]*H2I];
+      const w2I = _quantizeToSum(w2F, iw);
+
       let x1 = 0; const y1 = 0;
-      const w1a = aspects[r1a] * H1; pushIdx(r1a, x1, y1, w1a, H1); x1 += w1a + hgap;
-      const w1b = aspects[r1b] * H1; pushIdx(r1b, x1, y1, w1b, H1);
-      let x2 = 0; const y2 = H1 + vgap;
-      const w2a = aspects[r2a] * H2; pushIdx(r2a, x2, y2, w2a, H2); x2 += w2a + hgap;
-      const w2b = aspects[r2b] * H2; pushIdx(r2b, x2, y2, w2b, H2);
+      pushIdx(r1a, x1, y1, w1I[0], H1I); x1 += w1I[0] + hgap;
+      pushIdx(r1b, x1, y1, w1I[1], H1I);
+
+      let x2 = 0; const y2 = y1 + H1I + vgap;
+      pushIdx(r2a, x2, y2, w2I[0], H2I); x2 += w2I[0] + hgap;
+      pushIdx(r2b, x2, y2, w2I[1], H2I);
       return pos;
     }
     return pos;
@@ -425,24 +529,33 @@
     return heights.map(h => h * alpha);
   }
 
-  function buildRowPositions(buckets, heights, aspects, W, hgap, vgap) {
+  function buildRowPositions(buckets, heights, aspects, W, H, hgap, vgap) {
     const pos = new Array(aspects.length);
+    const rows = buckets.length;
+    const hgapI = Math.max(0, Math.round(hgap));
+    const vgapI = Math.max(0, Math.round(vgap));
+
+    // Quantize row heights to integers that sum exactly to H - gaps
+    const targetRowsH = Math.max(0, Math.round(H - vgapI * Math.max(0, rows - 1)));
+    const heightsI = _quantizeToSum(heights, targetRowsH).map(h => Math.max(1, h));
+
     let y = 0;
-    for (let r = 0; r < buckets.length; r++) {
+    for (let r = 0; r < rows; r++) {
       const row = buckets[r];
       const n = row.length;
-      const h = heights[r];
-      const innerW = Math.max(1e-6, W - hgap * Math.max(0, n - 1));
-      const widths = row.map(i => Math.max(1e-6, aspects[i]) * h);
-      const beta = innerW / Math.max(1e-6, widths.reduce((s, v) => s + v, 0));
+      const hI = heightsI[r];
+      const innerWInt = Math.max(0, Math.round(W - hgapI * Math.max(0, n - 1)));
+      const widthsF = row.map(i => Math.max(1e-6, aspects[i]) * hI);
+      const widthsI = _quantizeToSum(widthsF, innerWInt);
+
       let x = 0;
       for (let k = 0; k < n; k++) {
         const i = row[k];
-        const w = widths[k] * beta;
-        pos[i] = {x, y, width: w, height: h};
-        x += w + hgap;
+        const wI = Math.max(0, widthsI[k]);
+        pos[i] = { x, y, width: wI, height: hI };
+        x += wI + hgapI;
       }
-      y += h + vgap;
+      y += hI + vgapI;
     }
     return pos;
   }
@@ -455,23 +568,27 @@
     const jitter = Math.max(0, Math.min(1, (opts && +opts.jitter) || 0.12));
     const pboost = Math.max(0, Math.min(1, (opts && +opts.pboost) || 0.15));
     const align = (opts && opts.align) || 'center';
+    const targetH = (opts && opts.targetH) || 0;
+    const hgapI = Math.max(0, Math.round(hgap));
+    const vgapI = Math.max(0, Math.round(vgap));
     function sRand(seed) { const x = Math.sin(seed) * 43758.5453123; return x - Math.floor(x); }
-
+  
     let scales = new Array(buckets.length).fill(1);
     let positions = new Array(aspects.length);
-
-    // Fixed-point like refinement to exactly fill total H
+  
+    // Fixed-point like refinement to approach total H with integer-safe row blocks
     for (let iter = 0; iter < 3; iter++) {
       positions = new Array(aspects.length);
       let y = 0;
       const blockHeights = [];
-
+  
       for (let r = 0; r < buckets.length; r++) {
         const row = buckets[r];
         const n = row.length;
         const baseH = heights[r] * scales[r];
-        const innerW = Math.max(1e-6, W - hgap * Math.max(0, n - 1));
-
+        const innerW = Math.max(1e-6, W - hgapI * Math.max(0, n - 1));
+        const innerWInt = Math.max(0, Math.round(innerW));
+  
         // Per-image factors (stable pseudo-random + portrait boost)
         const factors = [];
         for (let k = 0; k < n; k++) {
@@ -481,32 +598,29 @@
           f = Math.max(0.6, Math.min(1.6, f));
           factors.push(f);
         }
-
-        // Normalize to fit row width
-        const sumW = row.reduce((s, i, k) => s + aspects[i] * baseH * factors[k], 0);
-        const gamma = innerW / Math.max(1e-6, sumW);
-
-        // Compute per-image sizes and row block height
-        const heightsI = factors.map(f => baseH * f * gamma);
+  
+        // Proportional widths, then quantize to exact inner width
+        const widthsProp = row.map((i, k) => Math.max(1e-6, aspects[i]) * baseH * factors[k]);
+        const widthsI = _quantizeToSum(widthsProp, innerWInt);
+        const heightsI = row.map((i, k) => Math.max(1, Math.round(widthsI[k] / Math.max(1e-6, aspects[i]))));
         const rowBlockH = Math.max(...heightsI);
-
+  
         let x = 0;
         for (let k = 0; k < n; k++) {
           const i = row[k];
-          const h_i = heightsI[k];
-          const w_i = aspects[i] * h_i;
+          const wI = widthsI[k];
+          const hI = heightsI[k];
           let top = y;
-          if (align === 'center') top = y + (rowBlockH - h_i) / 2;
-          positions[i] = { x, y: top, width: w_i, height: h_i };
-          x += w_i + hgap;
+          if (align === 'center') top = y + Math.floor((rowBlockH - hI) / 2);
+          positions[i] = { x, y: top, width: wI, height: hI };
+          x += wI + hgapI;
         }
-
+  
         blockHeights[r] = rowBlockH;
-        y += rowBlockH + vgap;
+        y += rowBlockH + vgapI;
       }
-
-      const totalH = blockHeights.reduce((s, v) => s + v, 0) + vgap * Math.max(0, blockHeights.length - 1);
-      const targetH = (opts && opts.targetH) || 0;
+  
+      const totalH = blockHeights.reduce((s, v) => s + v, 0) + vgapI * Math.max(0, blockHeights.length - 1);
       const scaleAlpha = targetH ? targetH / Math.max(1e-6, totalH) : 1;
       // Early stop when within sub-pixel tolerance
       if (targetH && Math.abs(totalH - targetH) <= 0.5) {
@@ -514,7 +628,7 @@
       }
       scales = scales.map(s => s * scaleAlpha);
     }
-
+  
     return positions;
   }
 
@@ -534,7 +648,7 @@
       // Use mosaic (per-image variable height) when requested
       const pos = (opts && opts.mosaic)
         ? buildRowPositionsMosaic(buckets, heights, aspects, W, hgap, vgap, { jitter: opts.jitter, pboost: opts.pboost, align: opts.align, targetH: H })
-        : buildRowPositions(buckets, heights, aspects, W, hgap, vgap);
+        : buildRowPositions(buckets, heights, aspects, W, H, hgap, vgap);
 
       const used = pos.reduce((s, p) => s + p.width * p.height, 0);
       const util = used / (W * H);
