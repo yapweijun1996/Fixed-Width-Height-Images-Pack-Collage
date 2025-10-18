@@ -39,18 +39,11 @@
   <img src="https://picsum.photos/id/1015/1200/800.jpg"  alt="">
   <img src="https://picsum.photos/id/1018/1200/800.jpg"  alt="">
   <img src="https://picsum.photos/id/1019/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1019/1200/800.jpg"  alt="">
 </div>
 <div
   class="img_collage"
   style="width:640px;height:500px;border:2px solid #333;background:#fafafa;"
-  data-flow="col"
-  data-mincols="3"
-  data-maxcols="6"
-  data-hgap="4"
-  data-vgap="4"
-  data-style="mosaic"
-  data-jitter="0.18"
-  data-portraitboost="0.25"
 >
   <img src="https://picsum.photos/id/1015/1200/800.jpg"  alt="">
   <img src="https://picsum.photos/id/1018/1200/800.jpg"  alt="">
@@ -74,7 +67,21 @@
   <img src="https://picsum.photos/id/1040/800/1200.jpg"   alt="">
 </div>
 
-<div class="debug-info" id="debugInfo">Debug info will appear here...</div>
+<div
+  class="img_collage"
+  style="width:640px;height:500px;border:2px solid #333;background:#fafafa;"
+>
+  <img src="https://picsum.photos/id/1015/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1018/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1019/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1020/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1041/1181/1772.jpg"  alt="">
+  <img src="https://picsum.photos/id/1021/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1035/1181/1772.jpg"  alt="">
+  <img src="https://picsum.photos/id/1036/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1037/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1040/800/1200.jpg"   alt="">
+</div>
 
 <script>
 /*!
@@ -183,7 +190,7 @@
   }
 
   // ---------- ColumnNoCrop: solver ----------
-  function solveColumnNoCrop(aspects, W, H, hgap, vgap, minCols, maxCols) {
+  function solveColumnNoCrop(aspects, W, H, hgap, vgap, minCols, maxCols, minImgH) {
     log('[ColumnNoCrop] Start', {W,H,N:aspects.length, minCols, maxCols});
     let best = null;
 
@@ -217,6 +224,11 @@
           const wj = H_eff / Math.max(1e-6, Sj); // 欄寬 wj，使 Σ(wj/a) + gaps = H → 滿高
           if (!(wj > 0) || !Number.isFinite(wj)) { invalid = true; break; }
 
+          // minimal image height constraint for this column
+          const maxA = list.reduce((m, a) => Math.max(m, Math.max(1e-6, a)), 1e-6);
+          const minHCol = wj / maxA;
+          if (Number.isFinite(minImgH) && minImgH > 0 && minHCol < minImgH) { invalid = true; break; }
+
           cols.push({ count: cnt, aspects: list });
           widths.push(wj);
         }
@@ -230,10 +242,13 @@
           return;
         }
 
-        // 打分：gap 接近期望值、欄寬均衡
+        // 打分：gap 接近期望值、欄寬均衡 + 更高利用率 + 列數偏好
         const meanW = sumW / C;
         const varW = widths.reduce((s, v) => s + (v - meanW) * (v - meanW), 0) / C;
-        const score = Math.abs(neededGap - hgap) * 3 + Math.sqrt(varW);
+        const usedArea = widths.reduce((s, w, j) => s + w * Math.max(0, H - vgap * Math.max(0, counts[j] - 1)), 0);
+        const utilEst = usedArea / Math.max(1e-6, W * H);
+        const colsPref = Math.abs(C - Math.max(2, Math.round(Math.sqrt(N))));
+        const score = Math.abs(neededGap - hgap) * 2.5 + Math.sqrt(varW) * 0.7 + (1 - utilEst) * 80 + colsPref * 0.3;
 
         if (!best || score < best.score) {
           best = { C, counts, cols, widths, neededGap, sumW, score };
@@ -290,6 +305,77 @@
     return positions;
   }
 
+  // ---------- Small-set visual layouts (N ≤ 4) ----------
+  function buildSmallSetPositions(aspects, W, H, hgap, vgap) {
+    const N = aspects.length;
+    const pos = [];
+    const innerW = (n) => W - hgap * Math.max(0, n - 1);
+    const EPS2 = 1e-6;
+    function pushIdx(idx, x, y, w, h){ pos.push({ idx, x, y, width: w, height: h }); }
+    if (N === 1) {
+      const a = Math.max(EPS2, aspects[0]);
+      let w = W, h = W / a;
+      if (h > H) { h = H; w = H * a; }
+      const x = (W - w) / 2; const y = (H - h) / 2;
+      pushIdx(0, Math.max(0,x), Math.max(0,y), Math.max(0,w), Math.max(0,h));
+      return pos;
+    }
+    if (N === 2) {
+      const iw = innerW(2);
+      const sA = Math.max(EPS2, aspects[0] + aspects[1]);
+      const h = iw / sA;
+      const top = Math.max(0, (H - h) / 2);
+      const w0 = aspects[0] * h; const w1 = aspects[1] * h;
+      pushIdx(0, 0, top, w0, h);
+      pushIdx(1, w0 + hgap, top, w1, h);
+      return pos;
+    }
+    if (N === 3) {
+      const combos = [ [0,1,2], [0,2,1], [1,2,0] ];
+      let best = null;
+      for (const [i,j,k] of combos) {
+        const iw1 = innerW(2), iw2 = innerW(1);
+        const h1 = iw1 / Math.max(EPS2, aspects[i] + aspects[j]);
+        const h2 = iw2 / Math.max(EPS2, aspects[k]);
+        const alpha = (H - vgap) / Math.max(EPS2, h1 + h2);
+        const H1 = h1 * alpha, H2 = h2 * alpha;
+        const score = Math.abs(H1 - H2);
+        if (!best || score < best.score) best = {i,j,k,H1,H2,score};
+      }
+      const {i,j,k,H1,H2} = best;
+      let x = 0; const y1 = 0;
+      const w_i = aspects[i] * H1; pushIdx(i, x, y1, w_i, H1); x += w_i + hgap;
+      const w_j = aspects[j] * H1; pushIdx(j, x, y1, w_j, H1);
+      const w_k = aspects[k] * H2; const xk = (W - w_k) / 2; const y2 = H1 + vgap;
+      pushIdx(k, Math.max(0,xk), y2, w_k, H2);
+      return pos;
+    }
+    if (N === 4) {
+      const pairs = [ [ [0,1],[2,3] ], [ [0,2],[1,3] ], [ [0,3],[1,2] ] ];
+      let best = null;
+      for (const [[a,b],[c,d]] of pairs) {
+        const s1 = aspects[a] + aspects[b];
+        const s2 = aspects[c] + aspects[d];
+        const diff = Math.abs(s1 - s2);
+        if (!best || diff < best.diff) best = {rows:[[a,b],[c,d]], s1, s2, diff};
+      }
+      const [[r1a, r1b],[r2a, r2b]] = best.rows;
+      const iw = innerW(2);
+      const h1 = iw / Math.max(EPS2, aspects[r1a] + aspects[r1b]);
+      const h2 = iw / Math.max(EPS2, aspects[r2a] + aspects[r2b]);
+      const alpha = (H - vgap) / Math.max(EPS2, h1 + h2);
+      const H1 = h1 * alpha, H2 = h2 * alpha;
+      let x1 = 0; const y1 = 0;
+      const w1a = aspects[r1a] * H1; pushIdx(r1a, x1, y1, w1a, H1); x1 += w1a + hgap;
+      const w1b = aspects[r1b] * H1; pushIdx(r1b, x1, y1, w1b, H1);
+      let x2 = 0; const y2 = H1 + vgap;
+      const w2a = aspects[r2a] * H2; pushIdx(r2a, x2, y2, w2a, H2); x2 += w2a + hgap;
+      const w2b = aspects[r2b] * H2; pushIdx(r2b, x2, y2, w2b, H2);
+      return pos;
+    }
+    return pos;
+  }
+  
   // ---------- BalancedNoCrop（保留，作 row 方向後備/切換） ----------
   function balancedPartition(aspects, rows) {
     const idxs = aspects.map((_, i) => i).sort((a, b) => aspects[b] - aspects[a]);
@@ -417,7 +503,11 @@
 
   function solveBalancedNoCrop(aspects, W, H, hgap, vgap, opts) {
     let best = null;
-    for (let rows = 3; rows <= 6; rows++) {
+    const N2 = aspects.length;
+    const sqrtN = Math.max(2, Math.round(Math.sqrt(N2)));
+    const rowsMin = Math.max(2, sqrtN - 1);
+    const rowsMax = Math.min(8, sqrtN + 2);
+    for (let rows = rowsMin; rows <= rowsMax; rows++) {
       const buckets = balancedPartition(aspects, rows);
       if (buckets.some(b => b.length === 0)) continue;
 
@@ -433,7 +523,8 @@
       const util = used / (W * H);
       const minH = Math.min(...heights), maxH = Math.max(...heights);
       const uniform = maxH - minH;
-      const score = (1 - util) * 100 + uniform;
+      const rowsPref = Math.abs(rows - sqrtN);
+      const score = (1 - util) * 120 + uniform * 0.6 + rowsPref * 0.5;
       if (!best || score < best.score) {
         best = { rows, pos, util, uniform, score };
       }
@@ -445,6 +536,8 @@
   function place(root, imgs, positions) {
     root.style.position = 'relative';
     root.style.overflow = 'hidden';
+    const animate = ((root.dataset.animate || 'true') + '').toLowerCase() !== 'false';
+    const first = !root.__laid;
     for (let p = 0; p < positions.length; p++) {
       const P = positions[p];
       const i = (P.idx != null) ? P.idx : p; // 支援兩種格式
@@ -454,23 +547,50 @@
       s.margin = '0'; s.padding = '0'; s.border = '0';
       s.maxWidth = 'none'; s.maxHeight = 'none';
       try { s.setProperty('object-fit', 'contain', 'important'); } catch(_) {}
+      // Smooth transitions only after first layout
+      if (animate && !first) {
+        s.transition = 'left 160ms ease, top 160ms ease, width 160ms ease, height 160ms ease';
+        s.willChange = 'left, top, width, height';
+      } else {
+        s.transition = 'none';
+        s.willChange = '';
+      }
       s.left = P.x + 'px';
       s.top  = P.y + 'px';
       s.width  = P.width + 'px';
       s.height = P.height + 'px';
     }
+    root.__laid = true;
   }
 
   // ---------- Layout one box ----------
   function layoutBox(root) {
     const W = root.clientWidth;
     const H = root.clientHeight;
-    const hgap = clampNonNeg(getDataNumber(root.dataset, ['hgap','hGap'], 4));
-    const vgap = clampNonNeg(getDataNumber(root.dataset, ['vgap','vGap'], 4));
-    const flow = (root.dataset.flow || 'row').toLowerCase(); // 'col' or 'row'
-    const minCols = clampInt(getDataNumber(root.dataset, ['mincols'], 3), 1, 99);
-    const maxCols = clampInt(getDataNumber(root.dataset, ['maxcols'], 6), 1, 99);
+    const flow = (root.dataset.flow || 'auto').toLowerCase(); // 'auto' | 'col' | 'row'
+    const imgsCount = root.querySelectorAll('img').length;
+    const defGap = imgsCount > 20 ? 2 : 4;
     const minUtil = clampRange(getDataNumber(root.dataset, ['minutil'], 0.88), 0, 1); // 利用率門檻（預設 0.88）
+    const minImgH = clampNonNeg(getDataNumber(root.dataset, ['minimg','minimageheight'], 24));
+
+    const autoCols = (function(){
+      const N = imgsCount;
+      if (N <= 2) return {min: N, max: N};
+      if (N <= 4) return {min: 2, max: 3};
+      if (N <= 7) return {min: 3, max: 4};
+      if (N <= 12) return {min: 3, max: 6};
+      if (N <= 20) return {min: 4, max: 7};
+      return {min: 4, max: 8};
+    })();
+
+    const minCols = clampInt(getDataNumber(root.dataset, ['mincols'], autoCols.min), 1, 99);
+    const maxCols = clampInt(getDataNumber(root.dataset, ['maxcols'], autoCols.max), 1, 99);
+    const hgap = clampNonNeg(getDataNumber(root.dataset, ['hgap','hGap'], defGap));
+    const vgap = clampNonNeg(getDataNumber(root.dataset, ['vgap','vGap'], defGap));
+    // Dynamic minUtil threshold based on collection size
+    let effMinUtil = minUtil;
+    if (imgsCount > 30) effMinUtil = Math.max(effMinUtil, 0.94);
+    else if (imgsCount > 16) effMinUtil = Math.max(effMinUtil, 0.92);
 
     const imgs = Array.from(root.querySelectorAll('img'));
     if (!imgs.length || W <= 0 || H <= 0) return;
@@ -485,9 +605,18 @@
       return a;
     });
 
-    if (flow === 'col' || flow === 'column' || flow === 'bycol') {
+    // Small set visual rules for N ≤ 4
+    const Nsmall = aspects.length;
+    if (Nsmall <= 4) {
+      const positionsSmall = buildSmallSetPositions(aspects, W, H, hgap, vgap);
+      place(root, imgs, positionsSmall);
+      log('[SmallSet] layout used', { N: Nsmall });
+      return;
+    }
+  
+    if (flow === 'col' || flow === 'column' || flow === 'bycol' || flow === 'auto') {
       log('[ColumnNoCrop] === 開始佈局 ===');
-      const best = solveColumnNoCrop(aspects, W, H, hgap, vgap, minCols, maxCols);
+      const best = solveColumnNoCrop(aspects, W, H, hgap, vgap, minCols, maxCols, minImgH);
       if (best) {
         const positions = buildColumnPositions(best, W, H, hgap, vgap);
         const used = positions.reduce((s, p) => s + p.width * p.height, 0);
@@ -495,12 +624,12 @@
         log('[ColumnNoCrop] Utilization', (util * 100).toFixed(2) + '%');
 
         // 若欄式利用率太低 → 自動改用 row 方案以補滿空白
-        if (util >= minUtil) {
+        if (util >= effMinUtil) {
           place(root, imgs, positions);
           log('[ColumnNoCrop] === 佈局完成 ===');
           return;
         } else {
-          log('[ColumnNoCrop] 利用率低於門檻，回退 BalancedNoCrop', {minUtil});
+          log('[ColumnNoCrop] 利用率低於門檻，回退 BalancedNoCrop', {minUtil: effMinUtil});
         }
       } else {
         // 若無可行，回退 row
@@ -511,9 +640,25 @@
     // Row fallback / 或 flow=row
     log('[BalancedNoCrop] === 開始佈局 ===');
     const style = (root.dataset.style || '').toLowerCase();
-    const jitter = clampRange(getDataNumber(root.dataset, ['jitter'], 0), 0, 1);
-    const pboost = clampRange(getDataNumber(root.dataset, ['portraitboost'], 0), 0, 1);
-    const opts = { mosaic: style === 'mosaic' || jitter > 0, jitter, pboost, align: 'center' };
+    let jitter = getDataNumber(root.dataset, ['jitter'], NaN);
+    let pboost = getDataNumber(root.dataset, ['portraitboost'], NaN);
+
+    // Auto mosaic decision when style is not specified
+    let mosaicAuto = false;
+    if (!style) {
+      const aMin = Math.min(...aspects);
+      const aMax = Math.max(...aspects);
+      const variety = aMax / Math.max(1e-6, aMin);
+      const portraitShare = aspects.filter(a => a < 1).length / aspects.length;
+      mosaicAuto = variety > 2.0 || portraitShare > 0.30;
+    }
+    const useMosaic = (style === 'mosaic') || mosaicAuto || (hasNumber(jitter) && jitter > 0);
+
+    // Defaults when not provided
+    if (!hasNumber(jitter)) jitter = useMosaic ? 0.12 : 0;
+    if (!hasNumber(pboost)) pboost = useMosaic ? 0.15 : 0;
+
+    const opts = { mosaic: useMosaic, jitter: clampRange(jitter, 0, 1), pboost: clampRange(pboost, 0, 1), align: 'center' };
     const sol = solveBalancedNoCrop(aspects, W, H, hgap, vgap, opts);
     if (sol) {
       place(root, imgs, sol.pos);
@@ -554,6 +699,7 @@
         try { window.CollageModes && window.CollageModes.disconnect(); } catch(_) {}
       }, { once: true });
     } catch(_) {}
+
   }
 
   if (document.readyState === 'loading') {
