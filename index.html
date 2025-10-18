@@ -19,6 +19,25 @@
       max-height: 300px;
       overflow-y: auto;
     }
+
+    /* Collage defaults: prevent clipping, keep images contained */
+    .img_collage {
+      position: relative;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    .img_collage *,
+    .img_collage img {
+      box-sizing: border-box;
+    }
+    .img_collage img {
+      object-fit: contain !important;
+      object-position: center center !important;
+      display: block;
+      image-rendering: auto;
+      -webkit-user-drag: none;
+      user-select: none;
+    }
   </style>
 </head>
 <body>
@@ -95,6 +114,7 @@
   const CLASS = "img_collage";
 
   // Debug config
+  window.__COLLAGE_DEBUG = true;
   const DEBUG_ENABLED = !!window.__COLLAGE_DEBUG;
   const MAX_DEBUG_LINES = 500;
 
@@ -289,12 +309,9 @@
         const safeW = Math.max(0, w);
         let h = Math.max(0, safeW / Math.max(1e-6, a));
 
-        // 最後一張用剩餘高消除浮點/分配誤差 → 滿高
-        if (i === col.count - 1) {
-          const used = col.aspects.slice(0, i).reduce((s, aa) => s + Math.max(0, safeW / Math.max(1e-6, aa)), 0)
-                       + vgap * Math.max(0, col.count - 1);
-          h = Math.max(0, H - used);
-        }
+        // 保持原始比例，避免强制拉伸/压缩造成“伪裁剪”
+        // 不在最后一张使用剩余高度消除误差；微小误差由底部留白吸收
+        // h = safeW / a 已保证比例一致
 
         positions.push({idx: globalIndex, x, y, width: w, height: h});
         y += h + vgap;
@@ -547,6 +564,7 @@
       s.margin = '0'; s.padding = '0'; s.border = '0';
       s.maxWidth = 'none'; s.maxHeight = 'none';
       try { s.setProperty('object-fit', 'contain', 'important'); } catch(_) {}
+      try { s.setProperty('object-position', 'center center', 'important'); } catch(_) {}
       // Smooth transitions only after first layout
       if (animate && !first) {
         s.transition = 'left 160ms ease, top 160ms ease, width 160ms ease, height 160ms ease';
@@ -559,6 +577,22 @@
       s.top  = P.y + 'px';
       s.width  = P.width + 'px';
       s.height = P.height + 'px';
+    }
+    // Debug: log first 10 tiles' box sizes vs natural aspect when enabled
+    if (DEBUG_ENABLED && window.__COLLAGE_LOG_TILES) {
+      const cap = Math.min(10, positions.length);
+      for (let p = 0; p < cap; p++) {
+        const P = positions[p];
+        const i = (P.idx != null) ? P.idx : p;
+        const iw = imgs[i].naturalWidth || 0, ih = imgs[i].naturalHeight || 0;
+        const imgAR = ih > 0 ? iw / ih : 0;
+        const boxAR = P.height > 0 ? P.width / P.height : 0;
+        const boxW = +(P.width).toFixed(2);
+        const boxH = +(P.height).toFixed(2);
+        const boxARf = +(boxAR).toFixed(3);
+        const imgARf = +(imgAR).toFixed(3);
+        log('[Tile]', { idx: i, boxW, boxH, boxAR: boxARf, imgAR: imgARf });
+      }
     }
     root.__laid = true;
   }
