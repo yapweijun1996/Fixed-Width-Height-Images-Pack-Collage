@@ -1,42 +1,430 @@
-<!-- Two boards with the same data-id on purpose (the script will uniquify them) -->
-<div class="img_collage" style="width:720px;height:600px;"
-     data-id="boardA"
-     data-default-colspan="6">
-      <img src="https://picsum.photos/id/237/1200/800.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/10/800/1200.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/100/1000/1000.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/101/1200/900.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/1011/900/1200.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/1016/1200/800.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/102/800/1200.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/1024/1000/700.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/1028/1200/800.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/103/700/1000.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/1035/1200/800.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/1040/900/1200.jpg" alt="Random image">
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Image Collage - No Crop Smart Distribution</title>
+  <style>
+    body {
+      margin: 20px;
+      font-family: Arial, sans-serif;
+    }
+    .debug-info {
+      margin-top: 20px;
+      padding: 10px;
+      background: #f0f0f0;
+      border: 1px solid #ccc;
+      font-family: monospace;
+      font-size: 12px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+
+<h3>Image Collage - 20 Photos (640x500 Fixed Container - No Crop)</h3>
+
+<!-- 你的容器 -->
+<div class="img_collage" style="width:640px;height:500px;border:2px solid #333;background:#fafafa;" data-gap="4">
+  <img src="https://picsum.photos/id/1015/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1018/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1019/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1020/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1021/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1025/800/1200.jpg"   alt="">
+  <img src="https://picsum.photos/id/1003/1181/1772.jpg"  alt="">
+  <img src="https://picsum.photos/id/1024/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1027/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1028/800/1200.jpg"   alt="">
+  <img src="https://picsum.photos/id/1029/1181/1772.jpg"  alt="">
+  <img src="https://picsum.photos/id/1031/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1032/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1033/800/1200.jpg"   alt="">
+  <img src="https://picsum.photos/id/1035/1181/1772.jpg"  alt="">
+  <img src="https://picsum.photos/id/1036/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1037/1200/800.jpg"  alt="">
+  <img src="https://picsum.photos/id/1040/800/1200.jpg"   alt="">
+  <img src="https://picsum.photos/id/1041/1181/1772.jpg"  alt="">
+  <img src="https://picsum.photos/id/1043/1200/800.jpg"  alt="">
 </div>
 
-<div class="img_collage" style="width:720px;height:600px;"
-     data-id="boardA"
-     data-default-colspan="6">
-      <img src="https://picsum.photos/id/1060/1200/800.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/1062/800/1200.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/1074/1000/1000.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/1084/1200/900.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/200/900/1200.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/21/1200/800.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/219/800/1200.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/23/1000/700.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/24/1200/800.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/25/700/1000.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/30/1200/800.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/35/900/1200.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/40/800/800.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/42/1200/800.jpg" alt="Random image">
-      <img src="https://picsum.photos/id/48/900/1200.jpg" alt="Random image">
+<div class="debug-info" id="debugInfo">
+  Debug info will appear here...
 </div>
 
-<script src="img-collage.lite.v3.js"></script>
 <script>
+/*!
+ * NoCropSmartDistribution v3.0 — 不裁剪的智能行分配算法
+ * - 照片完整显示，不被裁剪 (object-fit: contain)
+ * - 智能处理 aspect ratio 差异造成的空白
+ * - 完全填满 640x500 容器，适合打印
+ */
+(function(){
+  "use strict";
+  const CLASS = "img_collage";
+
+  // ---------- Debug Logger ----------
+  function log(message, data = null) {
+    console.log(`[NoCropPacking] ${message}`, data || '');
+    const debugDiv = document.getElementById('debugInfo');
+    if (debugDiv) {
+      const line = document.createElement('div');
+      line.textContent = `${message} ${data ? JSON.stringify(data) : ''}`;
+      debugDiv.appendChild(line);
+    }
+  }
+
+  // ---------- Helpers ----------
+  const raf2 = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+  function preload(img){
+    return new Promise(res => {
+      if (img.complete && img.naturalWidth > 0) { res(); return; }
+      img.addEventListener('load', res, {once: true});
+      img.addEventListener('error', res, {once: true});
+    });
+  }
+
+  // ---------- No Crop Smart Distribution Algorithm ----------
+  /**
+   * 不裁剪的智能行分配算法
+   * 1. 使用 object-fit: contain 确保照片完整显示
+   * 2. 智能处理不同 aspect ratio 造成的空白
+   * 3. 优化行数配置，最大化空间利用
+   */
+  function noCropSmartDistribution(aspects, W, H, gap) {
+    log('=== 開始計算 No Crop Smart Distribution ===');
+    log('容器尺寸 (W x H):', `${W} x ${H}`);
+    log('照片數量:', aspects.length);
+    log('間距 (gap):', gap);
+
+    const n = aspects.length;
     
+    // 分析照片类型
+    const landscape = aspects.filter(a => a > 1).length;
+    const portrait = aspects.filter(a => a < 1).length;
+    const square = aspects.filter(a => Math.abs(a - 1) < 0.1).length;
+    
+    log(`照片類型分析: 橫向=${landscape}, 直向=${portrait}, 方形=${square}`);
+
+    // 尝试不同的行数配置
+    let bestConfig = null;
+    let bestScore = Infinity;
+
+    for (let numRows = 3; numRows <= 6; numRows++) {
+      // 计算每行应该放多少张照片
+      const basePerRow = Math.floor(n / numRows);
+      const remainder = n % numRows;
+      
+      const rowCounts = [];
+      for (let i = 0; i < numRows; i++) {
+        rowCounts.push(basePerRow + (i < remainder ? 1 : 0));
+      }
+
+      log(`嘗試 ${numRows} 行配置:`, rowCounts);
+
+      // 计算这个配置的详细信息
+      const config = calculateNoCropConfig(aspects, W, H, gap, rowCounts);
+      
+      if (config && config.score < bestScore) {
+        bestScore = config.score;
+        bestConfig = config;
+      }
+    }
+
+    if (!bestConfig) {
+      log('警告: 無法找到合適配置，使用降級方案');
+      return fallbackNoCropLayout(aspects, W, H, gap);
+    }
+
+    log('選擇最佳配置:', `${bestConfig.rows.length} 行`);
+    log('空間利用率:', `${bestConfig.utilization.toFixed(2)}%`);
+    log('行高範圍:', `${bestConfig.minHeight.toFixed(2)} - ${bestConfig.maxHeight.toFixed(2)}`);
+
+    // 生成最终位置
+    const positions = generateNoCropPositions(bestConfig, gap);
+    
+    log('=== 計算完成 ===');
+    return positions;
+  }
+
+  /**
+   * 计算不裁剪配置
+   */
+  function calculateNoCropConfig(aspects, W, H, gap, rowCounts) {
+    const numRows = rowCounts.length;
+    const availableHeight = H - gap * (numRows - 1);
+    
+    let idx = 0;
+    const rows = [];
+
+    for (let rowIdx = 0; rowIdx < numRows; rowIdx++) {
+      const count = rowCounts[rowIdx];
+      const rowAspects = aspects.slice(idx, idx + count);
+      idx += count;
+
+      // 计算该行的平均 aspect ratio
+      const avgAspect = rowAspects.reduce((sum, a) => sum + a, 0) / rowAspects.length;
+      
+      rows.push({
+        start: idx - count,
+        count: count,
+        aspects: rowAspects,
+        avgAspect: avgAspect
+      });
+    }
+
+    // 计算理想的行高（基于平均 aspect ratio）
+    // 假设每行高度 = h，则每行宽度 = avgAspect * h
+    // 考虑到 object-fit: contain，实际显示区域可能更小
+    
+    const idealHeights = rows.map(row => {
+      const availableWidth = W - (row.count - 1) * gap;
+      const idealHeight = availableWidth / row.avgAspect;
+      return idealHeight;
+    });
+
+    const totalIdealHeight = idealHeights.reduce((sum, h) => sum + h, 0);
+    const scale = availableHeight / totalIdealHeight;
+
+    const scaledHeights = idealHeights.map(h => h * scale);
+    const minHeight = Math.min(...scaledHeights);
+    const maxHeight = Math.max(...scaledHeights);
+    const heightVariance = maxHeight - minHeight;
+
+    // 计算空间利用率（考虑 contain 模式的空白）
+    let utilization = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const height = scaledHeights[i];
+      const availableWidth = W - (row.count - 1) * gap;
+      
+      // 计算该行实际使用的面积
+      let rowUsedArea = 0;
+      for (const aspect of row.aspects) {
+        // contain 模式下，实际显示尺寸由较小的维度决定
+        const displayWidth = Math.min(aspect * height, availableWidth / row.count);
+        const displayHeight = displayWidth / aspect;
+        rowUsedArea += displayWidth * displayHeight;
+      }
+      
+      utilization += rowUsedArea;
+    }
+    
+    utilization = (utilization / (W * H)) * 100;
+
+    // 评分：高度差异 + 空间利用率
+    const score = heightVariance + (100 - utilization) * 2;
+
+    // 检查是否可行（每行高度不能太小）
+    if (minHeight < 40) {
+      return null; // 照片太小，不可行
+    }
+
+    return {
+      rows: rows.map((row, i) => ({
+        ...row,
+        height: scaledHeights[i]
+      })),
+      scale: scale,
+      minHeight: minHeight,
+      maxHeight: maxHeight,
+      utilization: utilization,
+      score: score
+    };
+  }
+
+  /**
+   * 生成不裁剪的图片位置
+   */
+  function generateNoCropPositions(config, gap) {
+    const positions = [];
+    let y = 0;
+
+    for (const row of config.rows) {
+      let x = 0;
+      const availableWidth = 640 - (row.count - 1) * gap; // 硬编码容器宽度
+      
+      // 计算该行每张图片的显示尺寸
+      for (let i = 0; i < row.count; i++) {
+        const imgIdx = row.start + i;
+        const aspect = row.aspects[i];
+        const maxHeight = row.height;
+        
+        // contain 模式：保持 aspect ratio，完整显示
+        let displayWidth, displayHeight;
+        
+        // 假设每张图片的可用宽度
+        const availableImgWidth = availableWidth / row.count;
+        const idealImgHeight = availableImgWidth / aspect;
+        
+        if (idealImgHeight <= maxHeight) {
+          // 宽度受限
+          displayWidth = availableImgWidth;
+          displayHeight = idealImgHeight;
+        } else {
+          // 高度受限
+          displayHeight = maxHeight;
+          displayWidth = displayHeight * aspect;
+        }
+        
+        // 居中对齐
+        const xOffset = (availableImgWidth - displayWidth) / 2;
+        const yOffset = (maxHeight - displayHeight) / 2;
+        
+        positions.push({
+          idx: imgIdx,
+          x: x + xOffset,
+          y: y + yOffset,
+          width: displayWidth,
+          height: displayHeight
+        });
+
+        x += availableImgWidth + gap;
+      }
+
+      log(`第 ${positions.length / row.count} 行: ${row.count} 張照片, H=${row.height.toFixed(2)}, Y=${y.toFixed(2)}`);
+      y += row.height + gap;
+    }
+
+    return positions;
+  }
+
+  /**
+   * 降级方案：简单的不裁剪布局
+   */
+  function fallbackNoCropLayout(aspects, W, H, gap) {
+    log('使用降級方案');
+    const numRows = 5;
+    const rowHeight = (H - gap * (numRows - 1)) / numRows;
+    const positions = [];
+    
+    let imgIdx = 0;
+    for (let r = 0; r < numRows && imgIdx < aspects.length; r++) {
+      let x = 0;
+      const y = r * (rowHeight + gap);
+      
+      // 简单的等宽分配
+      const remainingImgs = aspects.length - imgIdx;
+      const maxInRow = Math.min(remainingImgs, 4);
+      const imgWidth = (W - gap * (maxInRow - 1)) / maxInRow;
+      
+      for (let i = 0; i < maxInRow && imgIdx < aspects.length; i++) {
+        const aspect = aspects[imgIdx];
+        let displayWidth, displayHeight;
+        
+        const idealHeight = imgWidth / aspect;
+        if (idealHeight <= rowHeight) {
+          displayWidth = imgWidth;
+          displayHeight = idealHeight;
+        } else {
+          displayHeight = rowHeight;
+          displayWidth = displayHeight * aspect;
+        }
+        
+        const xOffset = (imgWidth - displayWidth) / 2;
+        const yOffset = (rowHeight - displayHeight) / 2;
+        
+        positions.push({
+          idx: imgIdx,
+          x: x + xOffset,
+          y: y + yOffset,
+          width: displayWidth,
+          height: displayHeight
+        });
+        
+        x += imgWidth + gap;
+        imgIdx++;
+      }
+    }
+
+    return positions;
+  }
+
+  // ---------- 绝对定位摆放 ----------
+  function placeAbsolute(root, imgs, positions) {
+    root.style.position = 'relative';
+    root.style.overflow = 'hidden';
+
+    for (let i = 0; i < positions.length; i++) {
+      const pos = positions[i];
+      const img = imgs[pos.idx];
+      
+      const s = img.style;
+      s.position = 'absolute';
+      s.margin = '0'; s.padding = '0'; s.border = '0';
+      s.maxWidth = 'none'; s.maxHeight = 'none';
+      try { s.setProperty('object-fit', 'contain', 'important'); } catch(_) {} // 关键：使用 contain 而不是 cover
+      
+      s.left = pos.x + 'px';
+      s.top = pos.y + 'px';
+      s.width = pos.width + 'px';
+      s.height = pos.height + 'px';
+    }
+  }
+
+  // ---------- 单容器布局 ----------
+  function layoutBox(root) {
+    const W = root.clientWidth;
+    const H = root.clientHeight;
+    const gap = +root.dataset.gap || 8;
+    const imgs = Array.from(root.querySelectorAll('img'));
+
+    log('=== 開始佈局 ===');
+    
+    if (!imgs.length || W <= 0 || H <= 0) {
+      log('錯誤: 容器或照片數據無效');
+      return;
+    }
+
+    // 读取图片宽高比
+    const aspects = imgs.map((img, i) => {
+      const w = img.naturalWidth || 0;
+      const h = img.naturalHeight || 0;
+      const aspect = (w > 0 && h > 0) ? w / h : 4 / 3;
+      log(`照片 ${i + 1}: ${w}x${h} = ${aspect.toFixed(3)}`);
+      return aspect;
+    });
+
+    // 计算布局
+    const positions = noCropSmartDistribution(aspects, W, H, gap);
+
+    // 摆放图片
+    placeAbsolute(root, imgs, positions);
+    
+    log('=== 佈局完成 ===');
+  }
+
+  // ---------- 初始化 ----------
+  async function init(selector = '.' + CLASS) {
+    const boxes = Array.from(document.querySelectorAll(selector));
+    const roList = [];
+
+    for (const root of boxes) {
+      const imgs = Array.from(root.querySelectorAll('img'));
+      await Promise.all(imgs.map(preload));
+      await raf2();
+      layoutBox(root);
+
+      const ro = new ResizeObserver(() => layoutBox(root));
+      ro.observe(root);
+      roList.push(ro);
+    }
+
+    window.NoCropPacking = {
+      relayout() { boxes.forEach(layoutBox); },
+      disconnect() { roList.forEach(ro => ro.disconnect()); }
+    };
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => init());
+  } else {
+    init();
+  }
+})();
 </script>
+
+</body>
+</html>
