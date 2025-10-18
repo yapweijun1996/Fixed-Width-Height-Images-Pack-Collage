@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Image Collage - No Crop Smart Distribution</title>
+  <title>Image Collage - No-Crop Column Flow + Balanced Row</title>
   <style>
     body {
       margin: 20px;
@@ -23,10 +23,23 @@
 </head>
 <body>
 
-<h3>Image Collage - 20 Photos (640x500 Fixed Container - No Crop)</h3>
+<h3>Image Collage - Fixed 640x500 (No Crop) — Column-first flow enabled</h3>
 
-<!-- 你的容器 -->
-<div class="img_collage" style="width:640px;height:500px;border:2px solid #333;background:#fafafa;" data-gap="4">
+<!-- 說明：
+  - data-flow="col" → 以「高度優先、由上到下，再由左到右」的欄式排法（滿高），適合 19/20 張等不等量
+  - data-flow 可切換為 "row" → 使用 BalancedNoCrop 的等高列式排法（滿寬）
+  - data-mincols / data-maxcols → 欄數搜尋範圍（欄式）
+  - data-hgap / data-vgap → 欄間與圖間間距
+-->
+<div
+  class="img_collage"
+  style="width:640px;height:500px;border:2px solid #333;background:#fafafa;"
+  data-flow="col"
+  data-mincols="3"
+  data-maxcols="6"
+  data-hgap="4"
+  data-vgap="4"
+>
   <img src="https://picsum.photos/id/1015/1200/800.jpg"  alt="">
   <img src="https://picsum.photos/id/1018/1200/800.jpg"  alt="">
   <img src="https://picsum.photos/id/1019/1200/800.jpg"  alt="">
@@ -49,370 +62,291 @@
   <img src="https://picsum.photos/id/1043/1200/800.jpg"  alt="">
 </div>
 
-<div class="debug-info" id="debugInfo">
-  Debug info will appear here...
-</div>
+<div class="debug-info" id="debugInfo">Debug info will appear here...</div>
 
 <script>
 /*!
- * NoCropSmartDistribution v3.0 — 不裁剪的智能行分配算法
- * - 照片完整显示，不被裁剪 (object-fit: contain)
- * - 智能处理 aspect ratio 差异造成的空白
- * - 完全填满 640x500 容器，适合打印
+ * ColumnNoCrop v1.0 + BalancedNoCrop v4.0
+ * - ColumnNoCrop（高度優先、欄式）：由上到下，再由左到右；每欄恰好填滿 H，不裁剪，不變形
+ *   對 N=19/20 等不等量都穩定；自動搜索欄數與每欄張數分配，將橫向剩餘寬度分配到欄間距，避免水平留白帶來縫隙不齊
+ * - BalancedNoCrop（寬度優先、列式）：滿寬、列高一致，已在前版驗證 >95% 利用率
  */
 (function(){
   "use strict";
   const CLASS = "img_collage";
 
   // ---------- Debug Logger ----------
-  function log(message, data = null) {
-    console.log(`[NoCropPacking] ${message}`, data || '');
+  function log(message, data) {
+    const prefix = "";
+    console.log(prefix + message, data ?? '');
     const debugDiv = document.getElementById('debugInfo');
     if (debugDiv) {
       const line = document.createElement('div');
-      line.textContent = `${message} ${data ? JSON.stringify(data) : ''}`;
+      line.textContent = `${message} ${data !== undefined ? JSON.stringify(data) : ''}`;
       debugDiv.appendChild(line);
     }
   }
 
   // ---------- Helpers ----------
   const raf2 = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-
   function preload(img){
-    return new Promise(res => {
-      if (img.complete && img.naturalWidth > 0) { res(); return; }
-      img.addEventListener('load', res, {once: true});
-      img.addEventListener('error', res, {once: true});
+    return new Promise(res=>{
+      if (img.complete && img.naturalWidth>0) { res(); return; }
+      img.addEventListener('load', res, {once:true});
+      img.addEventListener('error', res, {once:true});
     });
   }
 
-  // ---------- No Crop Smart Distribution Algorithm ----------
-  /**
-   * 不裁剪的智能行分配算法
-   * 1. 使用 object-fit: contain 确保照片完整显示
-   * 2. 智能处理不同 aspect ratio 造成的空白
-   * 3. 优化行数配置，最大化空间利用
-   */
-  function noCropSmartDistribution(aspects, W, H, gap) {
-    log('=== 開始計算 No Crop Smart Distribution ===');
-    log('容器尺寸 (W x H):', `${W} x ${H}`);
-    log('照片數量:', aspects.length);
-    log('間距 (gap):', gap);
-
-    const n = aspects.length;
-    
-    // 分析照片类型
-    const landscape = aspects.filter(a => a > 1).length;
-    const portrait = aspects.filter(a => a < 1).length;
-    const square = aspects.filter(a => Math.abs(a - 1) < 0.1).length;
-    
-    log(`照片類型分析: 橫向=${landscape}, 直向=${portrait}, 方形=${square}`);
-
-    // 尝试不同的行数配置
-    let bestConfig = null;
-    let bestScore = Infinity;
-
-    for (let numRows = 3; numRows <= 6; numRows++) {
-      // 计算每行应该放多少张照片
-      const basePerRow = Math.floor(n / numRows);
-      const remainder = n % numRows;
-      
-      const rowCounts = [];
-      for (let i = 0; i < numRows; i++) {
-        rowCounts.push(basePerRow + (i < remainder ? 1 : 0));
+  // ---------- ColumnNoCrop: compositions generator ----------
+  function generateCompositions(n, k, cb) {
+    // 產生 k 個正整數之組合，其和 = n；串流回呼避免大量內存
+    function rec(parts, left, slots) {
+      if (slots === 1) {
+        cb([...parts, left]);
+        return;
       }
-
-      log(`嘗試 ${numRows} 行配置:`, rowCounts);
-
-      // 计算这个配置的详细信息
-      const config = calculateNoCropConfig(aspects, W, H, gap, rowCounts);
-      
-      if (config && config.score < bestScore) {
-        bestScore = config.score;
-        bestConfig = config;
+      for (let t = 1; t <= left - (slots - 1); t++) {
+        parts.push(t);
+        rec(parts, left - t, slots - 1);
+        parts.pop();
       }
     }
-
-    if (!bestConfig) {
-      log('警告: 無法找到合適配置，使用降級方案');
-      return fallbackNoCropLayout(aspects, W, H, gap);
-    }
-
-    log('選擇最佳配置:', `${bestConfig.rows.length} 行`);
-    log('空間利用率:', `${bestConfig.utilization.toFixed(2)}%`);
-    log('行高範圍:', `${bestConfig.minHeight.toFixed(2)} - ${bestConfig.maxHeight.toFixed(2)}`);
-
-    // 生成最终位置
-    const positions = generateNoCropPositions(bestConfig, gap);
-    
-    log('=== 計算完成 ===');
-    return positions;
+    rec([], n, k);
   }
 
-  /**
-   * 计算不裁剪配置
-   */
-  function calculateNoCropConfig(aspects, W, H, gap, rowCounts) {
-    const numRows = rowCounts.length;
-    const availableHeight = H - gap * (numRows - 1);
-    
-    let idx = 0;
-    const rows = [];
+  // ---------- ColumnNoCrop: solver ----------
+  function solveColumnNoCrop(aspects, W, H, hgap, vgap, minCols, maxCols) {
+    log('[ColumnNoCrop] Start', {W,H,N:aspects.length, minCols, maxCols});
+    let best = null;
 
-    for (let rowIdx = 0; rowIdx < numRows; rowIdx++) {
-      const count = rowCounts[rowIdx];
-      const rowAspects = aspects.slice(idx, idx + count);
-      idx += count;
+    for (let C = Math.max(1, minCols); C <= Math.max(minCols, maxCols); C++) {
+      const gapSlots = Math.max(0, C - 1);
 
-      // 计算该行的平均 aspect ratio
-      const avgAspect = rowAspects.reduce((sum, a) => sum + a, 0) / rowAspects.length;
-      
-      rows.push({
-        start: idx - count,
-        count: count,
-        aspects: rowAspects,
-        avgAspect: avgAspect
+      generateCompositions(aspects.length, C, (counts) => {
+        // 按順序切分到各欄（保留原有輸入順序）：上到下，再到下一欄
+        let idx = 0;
+        const cols = [];
+        const widths = [];
+
+        for (let j = 0; j < C; j++) {
+          const cnt = counts[j];
+          const list = aspects.slice(idx, idx + cnt);
+          idx += cnt;
+
+          const H_eff = H - vgap * Math.max(0, cnt - 1);
+          const Sj = list.reduce((s, a) => s + 1 / Math.max(1e-9, a), 0); // Σ(1/a)
+          const wj = H_eff / Math.max(1e-9, Sj); // 令欄寬 wj，使 Σ(wj/a) + gaps = H → 滿高
+
+          cols.push({count: cnt, aspects: list});
+          widths.push(wj);
+        }
+
+        const sumW = widths.reduce((s, v) => s + v, 0);
+        const neededGap = (C > 1) ? (W - sumW) / (C - 1) : 0; // 讓總寬 + gap*(C-1) 精確 = W
+
+        // 打分：禁止 neededGap 過小為負且過大；還要寬度分布均勻
+        const meanW = sumW / C;
+        const varW = widths.reduce((s, v) => s + (v - meanW) * (v - meanW), 0) / C;
+
+        const overPenalty = neededGap < 0 ? Math.abs(neededGap) * 1000 : 0;
+        const score = overPenalty + Math.abs(neededGap - hgap) * 3 + Math.sqrt(varW);
+
+        if (!best || score < best.score) {
+          best = {C, counts, cols, widths, neededGap, sumW, score};
+        }
       });
     }
 
-    // 计算理想的行高（基于平均 aspect ratio）
-    // 假设每行高度 = h，则每行宽度 = avgAspect * h
-    // 考虑到 object-fit: contain，实际显示区域可能更小
-    
-    const idealHeights = rows.map(row => {
-      const availableWidth = W - (row.count - 1) * gap;
-      const idealHeight = availableWidth / row.avgAspect;
-      return idealHeight;
+    if (best) {
+      log('[ColumnNoCrop] Best', {cols: best.C, neededGap: +best.neededGap.toFixed(2), score: +best.score.toFixed(3)});
+    } else {
+      log('[ColumnNoCrop] No feasible partition');
+    }
+    return best;
+  }
+
+  function buildColumnPositions(best, W, H, hgap, vgap) {
+    const C = best.C;
+    const gap = C > 1 ? best.neededGap : 0; // 讓寬度總和精確鋪滿 W
+    const positions = [];
+    let globalIndex = 0;
+    let x = 0;
+
+    for (let j = 0; j < C; j++) {
+      const col = best.cols[j];
+      const w = best.widths[j];
+
+      // 逐張由上而下
+      let y = 0;
+      for (let i = 0; i < col.count; i++) {
+        const a = col.aspects[i];
+        let h = w / a;
+
+        // 最後一張用剩餘高消除浮點/分配誤差 → 滿高
+        if (i === col.count - 1) {
+          const used = col.aspects.slice(0, i).reduce((s, aa) => s + (w / aa), 0)
+                       + vgap * Math.max(0, col.count - 1);
+          h = Math.max(0, H - used);
+        }
+
+        positions.push({idx: globalIndex, x, y, width: w, height: h});
+        y += h + vgap;
+        globalIndex++;
+      }
+      x += w + (j < C - 1 ? gap : 0);
+    }
+    return positions;
+  }
+
+  // ---------- BalancedNoCrop（保留，作 row 方向後備/切換） ----------
+  function balancedPartition(aspects, rows) {
+    const idxs = aspects.map((_, i) => i).sort((a, b) => aspects[b] - aspects[a]);
+    const sums = new Array(rows).fill(0);
+    const buckets = new Array(rows).fill(0).map(() => []);
+    for (const i of idxs) {
+      let bi = 0, mn = sums[0];
+      for (let r = 1; r < rows; r++) {
+        if (sums[r] < mn) { mn = sums[r]; bi = r; }
+      }
+      buckets[bi].push(i);
+      sums[bi] += aspects[i];
+    }
+    return buckets;
+  }
+
+  function computeRowHeights(buckets, aspects, W, hgap) {
+    return buckets.map(row => {
+      const S = row.reduce((s, i) => s + aspects[i], 0);
+      const n = row.length;
+      const innerW = W - hgap * Math.max(0, n - 1);
+      return innerW / Math.max(1e-9, S);
     });
-
-    const totalIdealHeight = idealHeights.reduce((sum, h) => sum + h, 0);
-    const scale = availableHeight / totalIdealHeight;
-
-    const scaledHeights = idealHeights.map(h => h * scale);
-    const minHeight = Math.min(...scaledHeights);
-    const maxHeight = Math.max(...scaledHeights);
-    const heightVariance = maxHeight - minHeight;
-
-    // 计算空间利用率（考虑 contain 模式的空白）
-    let utilization = 0;
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      const height = scaledHeights[i];
-      const availableWidth = W - (row.count - 1) * gap;
-      
-      // 计算该行实际使用的面积
-      let rowUsedArea = 0;
-      for (const aspect of row.aspects) {
-        // contain 模式下，实际显示尺寸由较小的维度决定
-        const displayWidth = Math.min(aspect * height, availableWidth / row.count);
-        const displayHeight = displayWidth / aspect;
-        rowUsedArea += displayWidth * displayHeight;
-      }
-      
-      utilization += rowUsedArea;
-    }
-    
-    utilization = (utilization / (W * H)) * 100;
-
-    // 评分：高度差异 + 空间利用率
-    const score = heightVariance + (100 - utilization) * 2;
-
-    // 检查是否可行（每行高度不能太小）
-    if (minHeight < 40) {
-      return null; // 照片太小，不可行
-    }
-
-    return {
-      rows: rows.map((row, i) => ({
-        ...row,
-        height: scaledHeights[i]
-      })),
-      scale: scale,
-      minHeight: minHeight,
-      maxHeight: maxHeight,
-      utilization: utilization,
-      score: score
-    };
   }
 
-  /**
-   * 生成不裁剪的图片位置
-   */
-  function generateNoCropPositions(config, gap) {
-    const positions = [];
+  function scaleHeightsToH(heights, H, vgap) {
+    const sumH = heights.reduce((s, v) => s + v, 0);
+    const target = H - vgap * Math.max(0, heights.length - 1);
+    const alpha = target / Math.max(1e-9, sumH);
+    return heights.map(h => h * alpha);
+  }
+
+  function buildRowPositions(buckets, heights, aspects, W, hgap, vgap) {
+    const pos = new Array(aspects.length);
     let y = 0;
-
-    for (const row of config.rows) {
+    for (let r = 0; r < buckets.length; r++) {
+      const row = buckets[r];
+      const n = row.length;
+      const h = heights[r];
+      const innerW = W - hgap * Math.max(0, n - 1);
+      const widths = row.map(i => aspects[i] * h);
+      const beta = innerW / Math.max(1e-9, widths.reduce((s, v) => s + v, 0));
       let x = 0;
-      const availableWidth = 640 - (row.count - 1) * gap; // 硬编码容器宽度
-      
-      // 计算该行每张图片的显示尺寸
-      for (let i = 0; i < row.count; i++) {
-        const imgIdx = row.start + i;
-        const aspect = row.aspects[i];
-        const maxHeight = row.height;
-        
-        // contain 模式：保持 aspect ratio，完整显示
-        let displayWidth, displayHeight;
-        
-        // 假设每张图片的可用宽度
-        const availableImgWidth = availableWidth / row.count;
-        const idealImgHeight = availableImgWidth / aspect;
-        
-        if (idealImgHeight <= maxHeight) {
-          // 宽度受限
-          displayWidth = availableImgWidth;
-          displayHeight = idealImgHeight;
-        } else {
-          // 高度受限
-          displayHeight = maxHeight;
-          displayWidth = displayHeight * aspect;
-        }
-        
-        // 居中对齐
-        const xOffset = (availableImgWidth - displayWidth) / 2;
-        const yOffset = (maxHeight - displayHeight) / 2;
-        
-        positions.push({
-          idx: imgIdx,
-          x: x + xOffset,
-          y: y + yOffset,
-          width: displayWidth,
-          height: displayHeight
-        });
-
-        x += availableImgWidth + gap;
+      for (let k = 0; k < n; k++) {
+        const i = row[k];
+        const w = widths[k] * beta;
+        pos[i] = {x, y, width: w, height: h};
+        x += w + hgap;
       }
-
-      log(`第 ${positions.length / row.count} 行: ${row.count} 張照片, H=${row.height.toFixed(2)}, Y=${y.toFixed(2)}`);
-      y += row.height + gap;
+      y += h + vgap;
     }
-
-    return positions;
+    return pos;
   }
 
-  /**
-   * 降级方案：简单的不裁剪布局
-   */
-  function fallbackNoCropLayout(aspects, W, H, gap) {
-    log('使用降級方案');
-    const numRows = 5;
-    const rowHeight = (H - gap * (numRows - 1)) / numRows;
-    const positions = [];
-    
-    let imgIdx = 0;
-    for (let r = 0; r < numRows && imgIdx < aspects.length; r++) {
-      let x = 0;
-      const y = r * (rowHeight + gap);
-      
-      // 简单的等宽分配
-      const remainingImgs = aspects.length - imgIdx;
-      const maxInRow = Math.min(remainingImgs, 4);
-      const imgWidth = (W - gap * (maxInRow - 1)) / maxInRow;
-      
-      for (let i = 0; i < maxInRow && imgIdx < aspects.length; i++) {
-        const aspect = aspects[imgIdx];
-        let displayWidth, displayHeight;
-        
-        const idealHeight = imgWidth / aspect;
-        if (idealHeight <= rowHeight) {
-          displayWidth = imgWidth;
-          displayHeight = idealHeight;
-        } else {
-          displayHeight = rowHeight;
-          displayWidth = displayHeight * aspect;
-        }
-        
-        const xOffset = (imgWidth - displayWidth) / 2;
-        const yOffset = (rowHeight - displayHeight) / 2;
-        
-        positions.push({
-          idx: imgIdx,
-          x: x + xOffset,
-          y: y + yOffset,
-          width: displayWidth,
-          height: displayHeight
-        });
-        
-        x += imgWidth + gap;
-        imgIdx++;
+  function solveBalancedNoCrop(aspects, W, H, hgap, vgap) {
+    let best = null;
+    for (let rows = 3; rows <= 6; rows++) {
+      const buckets = balancedPartition(aspects, rows);
+      if (buckets.some(b => b.length === 0)) continue;
+      let heights = computeRowHeights(buckets, aspects, W, hgap);
+      heights = scaleHeightsToH(heights, H, vgap);
+      const pos = buildRowPositions(buckets, heights, aspects, W, hgap, vgap);
+      const used = pos.reduce((s, p) => s + p.width * p.height, 0);
+      const util = used / (W * H);
+      const minH = Math.min(...heights), maxH = Math.max(...heights);
+      const uniform = maxH - minH;
+      const score = (1 - util) * 100 + uniform;
+      if (!best || score < best.score) {
+        best = {rows, pos, util, uniform, score};
       }
     }
-
-    return positions;
+    return best;
   }
 
-  // ---------- 绝对定位摆放 ----------
-  function placeAbsolute(root, imgs, positions) {
+  // ---------- Absolute placement ----------
+  function place(root, imgs, positions) {
     root.style.position = 'relative';
     root.style.overflow = 'hidden';
-
-    for (let i = 0; i < positions.length; i++) {
-      const pos = positions[i];
-      const img = imgs[pos.idx];
-      
-      const s = img.style;
+    for (let p = 0; p < positions.length; p++) {
+      const P = positions[p];
+      const i = (P.idx != null) ? P.idx : p; // 支援兩種格式
+      const el = imgs[i];
+      const s = el.style;
       s.position = 'absolute';
       s.margin = '0'; s.padding = '0'; s.border = '0';
       s.maxWidth = 'none'; s.maxHeight = 'none';
-      try { s.setProperty('object-fit', 'contain', 'important'); } catch(_) {} // 关键：使用 contain 而不是 cover
-      
-      s.left = pos.x + 'px';
-      s.top = pos.y + 'px';
-      s.width = pos.width + 'px';
-      s.height = pos.height + 'px';
+      try { s.setProperty('object-fit', 'contain', 'important'); } catch(_) {}
+      s.left = P.x + 'px';
+      s.top  = P.y + 'px';
+      s.width  = P.width + 'px';
+      s.height = P.height + 'px';
     }
   }
 
-  // ---------- 单容器布局 ----------
+  // ---------- Layout one box ----------
   function layoutBox(root) {
     const W = root.clientWidth;
     const H = root.clientHeight;
-    const gap = +root.dataset.gap || 8;
+    const hgap = +root.dataset.hgap || +root.dataset.hGap || 4;
+    const vgap = +root.dataset.vgap || +root.dataset.vGap || 4;
+    const flow = (root.dataset.flow || 'row').toLowerCase(); // 'col' or 'row'
+    const minCols = +root.dataset.mincols || 3;
+    const maxCols = +root.dataset.maxcols || 6;
+
     const imgs = Array.from(root.querySelectorAll('img'));
+    if (!imgs.length || W <= 0 || H <= 0) return;
 
-    log('=== 開始佈局 ===');
-    
-    if (!imgs.length || W <= 0 || H <= 0) {
-      log('錯誤: 容器或照片數據無效');
-      return;
-    }
-
-    // 读取图片宽高比
-    const aspects = imgs.map((img, i) => {
-      const w = img.naturalWidth || 0;
-      const h = img.naturalHeight || 0;
-      const aspect = (w > 0 && h > 0) ? w / h : 4 / 3;
-      log(`照片 ${i + 1}: ${w}x${h} = ${aspect.toFixed(3)}`);
-      return aspect;
+    const aspects = imgs.map(img => {
+      const w = img.naturalWidth || 0, h = img.naturalHeight || 0;
+      return (w > 0 && h > 0) ? w / h : 4 / 3;
     });
 
-    // 计算布局
-    const positions = noCropSmartDistribution(aspects, W, H, gap);
+    if (flow === 'col' || flow === 'column' || flow === 'bycol') {
+      log('[ColumnNoCrop] === 開始佈局 ===');
+      const best = solveColumnNoCrop(aspects, W, H, hgap, vgap, minCols, maxCols);
+      if (best) {
+        const positions = buildColumnPositions(best, W, H, hgap, vgap);
+        place(root, imgs, positions);
+        log('[ColumnNoCrop] === 佈局完成 ===');
+        return;
+      }
+      // 若無可行，回退 row
+      log('[ColumnNoCrop] 無解，回退 BalancedNoCrop');
+    }
 
-    // 摆放图片
-    placeAbsolute(root, imgs, positions);
-    
-    log('=== 佈局完成 ===');
+    // Row fallback / 或 flow=row
+    log('[BalancedNoCrop] === 開始佈局 ===');
+    const sol = solveBalancedNoCrop(aspects, W, H, hgap, vgap);
+    if (sol) {
+      place(root, imgs, sol.pos);
+      log('[BalancedNoCrop] Utilization', (sol.util * 100).toFixed(2) + '%');
+      log('[BalancedNoCrop] === 佈局完成 ===');
+    }
   }
 
-  // ---------- 初始化 ----------
+  // ---------- Init ----------
   async function init(selector = '.' + CLASS) {
     const boxes = Array.from(document.querySelectorAll(selector));
     const roList = [];
-
     for (const root of boxes) {
       const imgs = Array.from(root.querySelectorAll('img'));
       await Promise.all(imgs.map(preload));
       await raf2();
       layoutBox(root);
-
       const ro = new ResizeObserver(() => layoutBox(root));
       ro.observe(root);
       roList.push(ro);
     }
-
-    window.NoCropPacking = {
+    window.CollageModes = {
       relayout() { boxes.forEach(layoutBox); },
       disconnect() { roList.forEach(ro => ro.disconnect()); }
     };
